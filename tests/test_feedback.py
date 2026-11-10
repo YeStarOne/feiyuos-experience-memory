@@ -390,8 +390,9 @@ class TestManifestWiring(unittest.TestCase):
             del os.environ["EXPMEM_SKILLS_DIR"]
 
     def test_settle_version_gate_resettles_old_rows(self):
-        # cmb-P1-forward：settled 行带 v+reason；v 落后判据版（含旧格式无 v）
-        # = 视为未结算——S4 抬版本后历史「unknown 结清」要能重开。
+        # cmb-P1-forward + 三签验收③：v1 时代的 unknown 结清行不许封死未来；
+        # 抬版重判后**不重复追加**——已在 v2 拿过分的键抬到 v3 也不再 +1
+        # （auto_marks 按卡幂等跨版本存活，重判≠重复记功）。
         import os
         import json as J
         import tempfile
@@ -407,10 +408,11 @@ class TestManifestWiring(unittest.TestCase):
                       encoding="utf-8") as f:
                 f.write(J.dumps({"ts": 0, "session": "s1", "turn": 1,
                                  "names": ["stardew-probe-after-action"]}) + NL)
-            # 旧格式行：没有 v → 不许封死，重判照跑
+            # v1 时代产物：unknown 结清行（当时 success=0 结构性全 unknown）
             with open(os.path.join(d, ".settled.jsonl"), "w",
                       encoding="utf-8") as f:
-                f.write(J.dumps({"session": "s1", "turn": 1}) + NL)
+                f.write(J.dumps({"session": "s1", "turn": 1, "v": 1,
+                                 "reason": "verdict:unknown"}) + NL)
             eps = [{"session": "s1", "turn": 1, "verdict": "success",
                     "episode_id": "e1", "actions": ["a1"]}]
             acts = [{"id": "a1", "verb": "state", "raw_path": "",
@@ -425,15 +427,62 @@ class TestManifestWiring(unittest.TestCase):
             out2 = api.settle_auto_marks(eps, acts, d)   # v=当前版 → 幂等照旧
             self.assertEqual(out2["marked"], {})
             self.assertEqual(out2["already_settled"], 1)
-            # 模拟 S4 抬版：v=1 的行重新开放结算
+            # 模拟下次抬版：v=当前 的行重新开放结算（重判），但卡已在 v2
+            # 拿过这回合的分 → 不重复 +1，counter 不动（cmb 验收③）
             old_v = api.SETTLE_VERDICT_V
-            api.SETTLE_VERDICT_V = 2
+            api.SETTLE_VERDICT_V = old_v + 1
             try:
                 out3 = api.settle_auto_marks(eps, acts, d)
-                self.assertEqual(out3["marked"],
-                                 {"stardew-probe-after-action": 1})
+                self.assertEqual(out3["marked"], {})
+                front, _ = __import__("expmem.skills",
+                                      fromlist=["load_skill"]).load_skill(
+                    os.path.join(d, "stardew-probe-after-action", "SKILL.md"))
+                self.assertEqual(front["counter"], 2)
+                rows = [J.loads(l) for l in
+                        open(os.path.join(d, ".settled.jsonl"),
+                             encoding="utf-8") if l.strip()]
+                self.assertEqual(rows[-1]["v"], old_v + 1)   # 重判行已追加
             finally:
                 api.SETTLE_VERDICT_V = old_v
+        finally:
+            del os.environ["EXPMEM_SKILLS_DIR"]
+
+    def test_per_card_idempotency_when_turn_unsettled(self):
+        # cmb-P2-residual（S4 必带）：半截卡（目录在 SKILL.md 缺）拖住回合
+        # 结清 → 重试时同回合用过的好卡不许每轮 +1（2→3→4 灌水）。
+        # 正解=按卡幂等：front 记 auto_marks（session|turn），已标过就跳过。
+        import os
+        import json as J
+        import tempfile
+        from expmem import api
+        d = tempfile.mkdtemp()
+        os.environ["EXPMEM_SKILLS_DIR"] = d
+        try:
+            import shutil
+            src = os.path.join(os.path.dirname(__file__), "..", "skills",
+                               "stardew-probe-after-action")
+            shutil.copytree(src, os.path.join(d, "stardew-probe-after-action"))
+            os.makedirs(os.path.join(d, "broken-card"))    # 半截卡
+            with open(os.path.join(d, ".injected.jsonl"), "w",
+                      encoding="utf-8") as f:
+                f.write(J.dumps({"ts": 0, "session": "s1", "turn": 1,
+                                 "names": ["broken-card",
+                                           "stardew-probe-after-action"]}) + NL)
+            eps = [{"session": "s1", "turn": 1, "verdict": "success",
+                    "episode_id": "e1", "actions": ["a1"]}]
+            acts = [{"id": "a1", "verb": "state", "raw_path": "",
+                     "segment": "sd state"}]
+            counters = []
+            for i in range(3):
+                out = api.settle_auto_marks(eps, acts, d)
+                front, _ = __import__("expmem.skills",
+                                      fromlist=["load_skill"]).load_skill(
+                    os.path.join(d, "stardew-probe-after-action", "SKILL.md"))
+                counters.append(front["counter"])
+                self.assertFalse(os.path.exists(os.path.join(d, ".settled.jsonl")),
+                                 "半截卡挡结清=settled 仍不写（可重试语义保留）")
+            self.assertEqual(counters, [2, 2, 2])   # 不许 2→3→4
+            self.assertEqual(out["marked"], {})     # 第三轮已无新标
         finally:
             del os.environ["EXPMEM_SKILLS_DIR"]
 

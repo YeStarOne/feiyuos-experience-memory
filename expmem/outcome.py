@@ -12,10 +12,12 @@
   - wrong_arg：/buy 不带 price 按售价×2 扣钱——只在证据齐全（买前后钱差 + 扣款额）
     时才判，缺一样就放弃（宁 unknown 不错判）
   - noop：`/store` 返 stored:[]；ready>0 而 收/收菜 0 件（day-loop 空转判据同源）
+  - success（S4，保守机械版）：goal_hint 非空 ∧ 写动作带正效果证据（stored 非空/
+    收获≥1）∧ 写后同回合有读探针——三条件闭环才判，缺一 unknown。
 
 probe_status：ok | unavailable。unavailable → verdict=unknown，不进 bench 分母。
 已知限制（S2 consolidator 接手）：stale / partial 需要跨动作语义，机械规则不做；
-success 判定需要 goal_hint，本阶段一律 unknown——bench 的成功率先留 null。
+success 的 hint↔动作语义匹配（做的是不是被问的那件事）留给以后，机械版只认闭环。
 """
 import re
 
@@ -35,6 +37,12 @@ CHARGE_JSON_RE = re.compile(r"\"(?:charge|cost|spent|totalCost)\"\s*:\s*(\d+)", 
 
 PROBE_VERBS = frozenset("state inv near farm".split())
 PROBE_RAW_PREFIX = ("/state", "/farm_report", "/inv", "/animals")
+
+# S4 success 共享件（consolidate 从这里 import，防双定义漂移）
+STORED_NONEMPTY_RE = re.compile(r"stored\"?\s*:\s*\[\s*[^ \]]")
+HARVEST_COUNT_RE = re.compile(r"(?:收|harvest|collect)[^\d]{0,12}(\d+)", re.I)
+WRITE_VERBS = frozenset("warp move act use water plant harvest dig sleep buy "
+                        "sell key wait raw".split())
 
 
 def is_probe(a) -> bool:
@@ -150,6 +158,28 @@ def classify_episode(ep: dict, actions) -> dict:
                                "attribution": attr,
                                "signal": (hit.out_head or "")[:80], "ready": ready})
             return ep
+
+    # S4 success（保守机械版，宁空勿猜）：goal_hint 非空（本回合真有任务）
+    # ∧ 写动作自带正效果证据（stored 非空 / 收获≥1）∧ 写后同回合有读探针——
+    # 证据闭环才算 success；hint 与动作的语义匹配（她做的是不是被问的那件事）
+    # 留给以后，机械版只认日志内的闭环证据，成功不许灌水。
+    hint = (ep.get("goal_hint") or "").strip()
+    if hint:
+        for a, h in heads:
+            if (getattr(a, "verb", "") or "") not in WRITE_VERBS:
+                continue
+            m = HARVEST_COUNT_RE.search(h)
+            positive = (STORED_NONEMPTY_RE.search(h) is not None
+                        or (m is not None and int(m.group(1)) >= 1))
+            if not positive:
+                continue
+            if any(p.ts > a.ts for p, _ in probes):   # 写后有读探针=当场对账
+                ep.update(verdict="success",
+                          outcome={"rule": "write_effect_probe_closed",
+                                   "action": a.id,
+                                   "signal": h[:80]})
+                return ep
+            break          # 写动作没带后续探针：只试第一个带证据的写动作
 
     ep["verdict"] = "unknown"
     return ep

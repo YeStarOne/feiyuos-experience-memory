@@ -106,7 +106,8 @@ def record_feedback(front: dict, raw, shown_ids=()) -> tuple:
     return apply_feedback(front, fb, shown_ids=shown_ids)
 
 
-def auto_from_episode(front: dict, verdict: str, used: bool = False) -> tuple:
+def auto_from_episode(front: dict, verdict: str, used: bool = False,
+                      auto_key: str = "") -> tuple:
     """ACE 对齐（intel 11-11 交付：「成功回合也打 helpful 标，不止失败才反馈」）：
     卡被引用且当集 verdict=success → 自动 weak_positive。
     used **缺省 False**（intel 复审：缺省往好猜=每个成功回合都记给在册卡；
@@ -119,6 +120,16 @@ def auto_from_episode(front: dict, verdict: str, used: bool = False) -> tuple:
         return dict(front), False, "not_used"
     if verdict != "success":
         return dict(front), False, "failure_not_auto_marked"
-    return apply_feedback(front, {"name": front.get("name", ""),
-                                  "kind": "weak_positive",
-                                  "note": "auto: success turn used this card"})
+    new_front, applied, reason = apply_feedback(
+        front, {"name": front.get("name", ""),
+                "kind": "weak_positive",
+                "note": "auto: success turn used this card"})
+    if applied and auto_key:
+        # cmb-P2-residual（S4 必带）：按卡幂等——front 记 auto_marks，同一张卡
+        # 同一 (session,turn) 永不重标。turn 级 .settled.jsonl 只做性能优化，
+        # 不做正确性依赖（半截卡拖住回合结清时，好卡也不能每轮 +1）。
+        marks = list(new_front.get("auto_marks") or [])
+        if auto_key not in marks:
+            marks.append(auto_key)
+        new_front["auto_marks"] = marks
+    return new_front, applied, reason

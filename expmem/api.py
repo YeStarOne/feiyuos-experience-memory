@@ -267,8 +267,9 @@ def record_skill_feedback(fb, shown_ids=()) -> dict:
     return {"applied": applied, "reason": reason, "front": new_front}
 
 
-SETTLE_VERDICT_V = 1
-# 判据版本：S4 把 success verdict（goal_hint）做出来时抬成 2——
+SETTLE_VERDICT_V = 2
+# 判据版本：v2=S4 引入 success verdict（goal_hint+写效果+写后探针闭环）——
+# v1 行（含今晚全是 unknown 的历史结清）自动视为未结算重判；
 # settled 行带 v，读取时 v<当前版 视为未结算（历史 unknown 结清不许
 # 永久封死未来的重判/重放信用，cmb-P1-forward）。
 
@@ -393,10 +394,16 @@ def settle_auto_marks(episodes, actions=None, skills_dir: str = None,
                 complete = False   # 目录在而 SKILL.md 缺：真损，可重试
                 continue
             front, body = load_skill(path)
+            # cmb-P2-residual（S4 必带）：按卡幂等——这张卡这个回合标过就跳过
+            # （半截卡拖住回合结清 → 重试时好卡不许再 +1）
+            skey_str = "%s|%s" % skey
+            if skey_str in (front.get("auto_marks") or []):
+                continue
             card_key = front.get("tool_key") or ""
             used = bool(card_key) and card_key in used_keys   # 「用了」≠「递了」
             new_front, applied, _ = _fb.auto_from_episode(front, "success",
-                                                          used=used)
+                                                          used=used,
+                                                          auto_key=skey_str)
             if applied:
                 try:
                     save_skill(path, new_front, body)

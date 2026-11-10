@@ -123,11 +123,9 @@ def write_candidates(specs, dropped, out_path: str) -> int:
 
 # ---------- 成功轨（机械可验证效果：outcome.py 三条失败规则的干净反演） ----------
 
-STORED_NONEMPTY_RE = re.compile(r"stored\"?\s*:\s*\[\s*[^ \]]")
-HARVEST_COUNT_RE = re.compile(r"(?:收|harvest|collect)[^\d]{0,12}(\d+)", re.I)
-# 首跑实锤（11-11）：买对不能拿状态行前缀的「钱N」当扣款——那是余额不是 charge，
-# 「Missing parameter: id」的失败买被误标成功。扣款只认 JSON 字段。
+# 正则与写动词唯一权威在 outcome.py（S4 success 共享件），这里只 import 防漂移
 from .outcome import CHARGE_JSON_RE as _BUY_CHARGE_RE  # noqa: E402
+from .outcome import STORED_NONEMPTY_RE, HARVEST_COUNT_RE, WRITE_VERBS  # noqa: E402,F401
 
 # GMemory 阈值 5 起步的机械版（intel 11-11 交付）：证据太薄的键不开卡——
 # 「卡册里没有含对账的成功轨之前，归纳机器不开工，避免空对空归纳」。
@@ -137,8 +135,7 @@ MIN_SPEC_EVIDENCE = 3
 # 首跑实锤（11-11）：同一条 bash 链里所有子动作共享同一段返回文本——读动作
 # （inv/state）会「白捡」写动作的效果证据，把成功轨记到 stardew.inv 名下。
 # 归因规则：同一 call 内优先写动作；call 内全是读才轮到读。
-_WRITE_VERBS = frozenset("warp move act use water plant harvest dig sleep buy "
-                         "sell key wait raw".split())
+_WRITE_VERBS = WRITE_VERBS
 
 
 def scan_success(episodes, actions):

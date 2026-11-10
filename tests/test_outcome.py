@@ -177,5 +177,62 @@ class TestGuards(unittest.TestCase):
         self.assertEqual(ep["probe_status"], "unavailable")
 
 
+class TestS4Success(unittest.TestCase):
+    """S4 保守机械版 success：goal_hint 非空 ∧ 写动作带正效果证据
+    ∧ 写后同回合有读探针——三条件闭环才判，缺一 unknown（成功不许灌水）。"""
+
+    def test_full_closed_loop_is_success(self):
+        # 终局测试形：有任务（存一件）+ /store stored 非空 + 写后 /state 对账
+        # （生产里 raw 动作 verb="raw"，test_capture 实证）
+        ep = {"verdict": "unknown", "goal_hint": "把包里一件东西存进仓库箱子同回合对账"}
+        classify_episode(ep, [
+            act("w1", verb="raw", raw_path="/store", ts=2000,
+                out='{"ok":true,"stored":[{"name":"Parsnip","count":1}]}'),
+            act("p1", verb="state", ts=3000, out="Farm(52,16) 冬25 | 钱1095885")])
+        self.assertEqual(ep["verdict"], "success")
+        self.assertEqual(ep["outcome"]["rule"], "write_effect_probe_closed")
+        self.assertEqual(ep["outcome"]["action"], "w1")
+
+    def test_no_hint_stays_unknown(self):
+        # 没有任务的回合（她自钓鱼/闲聊）有正效果也不判 success
+        ep = {"verdict": "unknown", "goal_hint": ""}
+        classify_episode(ep, [
+            act("w1", verb="raw", raw_path="/store", ts=2000,
+                out='{"ok":true,"stored":[{"name":"Parsnip","count":1}]}'),
+            act("p1", verb="state", ts=3000, out="Farm(52,16) 冬25")])
+        self.assertEqual(ep["verdict"], "unknown")
+
+    def test_no_post_write_probe_stays_unknown(self):
+        # 写了也有效果但没当场对账：不判成功（这正是要炼的行为）
+        ep = {"verdict": "unknown", "goal_hint": "存一件东西"}
+        classify_episode(ep, [
+            act("p0", verb="state", ts=1000, out="Farm(52,16) 冬25"),   # 写前探针
+            act("w1", verb="raw", raw_path="/store", ts=2000,
+                out='{"ok":true,"stored":[{"name":"Parsnip","count":1}]}')])
+        self.assertEqual(ep["verdict"], "unknown")
+
+    def test_harvest_one_counts_but_zero_does_not(self):
+        ep = {"verdict": "unknown", "goal_hint": "收菜"}
+        classify_episode(ep, [
+            act("w1", verb="raw", raw_path="/interact", ts=2000, out="收菜完成3件"),
+            act("p1", verb="state", ts=3000, out="Farm(52,16) 冬25")])
+        self.assertEqual(ep["verdict"], "success")
+        ep2 = {"verdict": "unknown", "goal_hint": "收菜"}
+        classify_episode(ep2, [
+            act("w1", verb="raw", raw_path="/interact", ts=2000, out="收菜完成0件"),
+            act("p1", verb="state", ts=3000, out="Farm(52,16) 冬25")])
+        # 收 0 件：HARVEST_COUNT=0 不算正效果；ready>0 的形态另有 noop 规则先判
+        self.assertNotEqual(ep2["verdict"], "success")
+
+    def test_failure_rules_win_over_success(self):
+        # stored:[] 先判 noop——同一回合里好证据救不了假成功
+        ep = {"verdict": "unknown", "goal_hint": "存一件东西"}
+        classify_episode(ep, [
+            act("w1", raw_path="/store", ts=2000, out='{"stored":[],"ok":true}'),
+            act("p1", verb="state", ts=3000, out="Farm(52,16) 冬25")])
+        self.assertEqual(ep["verdict"], "failure")
+        self.assertEqual(ep["failure_class"], "noop")
+
+
 if __name__ == "__main__":
     unittest.main()

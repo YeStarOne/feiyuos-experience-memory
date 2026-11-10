@@ -31,6 +31,30 @@ POLL_WINDOW_S = 30           # cmb-G2：轮询重复窗口
 # 但无锚宽正则扫全动作文本会吃进非日期数字（首跑实测 fill=47/ambig=27，偏离
 # 对账锚 61/14）——cmb 锚定复算证明 `\(\d+,\d+\) 季N` 天花板不变（62），故落
 # **锚定版**：(x,y) 前缀 + 中文季日；多日歧义按既定规则弃（宁空勿猜）。
+# S4 goal_hint：回合的用户指令——生产 user/message 正文在 content[0].text，
+# 真话在 <user_message qq=…>…</user_message> 标签里（其余全是记忆回灌/时间
+# 快照/日程等系统注入）；没有标签时退回剥目录块后的全文（RN 信等）。
+_CATALOG_BLOCK_RE = re.compile(r"<available_skills>.*?</available_skills>", re.S)
+_USER_MSG_RE = re.compile(r"<user_message[^>]*>(.*?)</user_message>", re.S)
+
+
+def _hint_text(da) -> str:
+    text = da.get("text") or ""
+    if not text or not isinstance(text, str):
+        c = da.get("content")
+        if isinstance(c, list):
+            text = "".join(x.get("text", "") for x in c
+                           if isinstance(x, dict))
+    text = str(text)
+    m = _USER_MSG_RE.search(text)
+    if m:
+        text = m.group(1)
+    else:
+        text = _CATALOG_BLOCK_RE.sub("", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:120]
+
+
 GAME_DAY_RE = re.compile(
     r"[（(]\s*\d{1,4}\s*,\s*-?\d{1,4}\s*[）)]\s*([春夏秋冬])(\d+)")
 SEASON_JSON_RE = re.compile(r'"season"\s*:\s*"(spring|summer|fall|autumn|winter)"', re.I)
@@ -229,6 +253,7 @@ def build_session(events, session_name: str):
     jo_call = {}          # job_output 的 callId -> jobId
     open_turn = None      # 按文件顺序开合，不按回合号
     part = 0              # gap 切分的分片号
+    last_hint = ""        # turn 外到的用户消息（有些日志 user/message 先于 turn/start）
 
     def _close(turn_end_ts, verdict):
         nonlocal open_turn, part
@@ -239,6 +264,7 @@ def build_session(events, session_name: str):
             episode_id=_sha("%s|%s|%d" % (session_name, open_turn["seq"], part)),
             session=session_name, turn=open_turn["turn"],
             t_from=open_turn["t_from"], t_to=turn_end_ts,
+            goal_hint=open_turn.get("hint", ""),
             actions=[a.id for a in acts],
             verdict=verdict,
         )
@@ -264,7 +290,22 @@ def build_session(events, session_name: str):
             if is_owner:
                 part = 0
                 open_turn = {"seq": ev.get("seq"), "turn": da.get("turn"),
-                             "t_from": ts, "acts": [], "last": None}
+                             "t_from": ts, "acts": [], "last": None,
+                             "hint": last_hint}
+                last_hint = ""
+        elif typ == "user/message":
+            # S4 goal_hint：本回合的用户指令（生产形 content[0].text，
+            # 真话在 <user_message> 标签；time-context 快照剥不出真话=空）
+            src = da.get("source")
+            is_snapshot = (isinstance(src, dict) and src.get("kind") == "time-context")
+            h = "" if is_snapshot else _hint_text(da)
+            if h and h.startswith("Time sampled while preparing"):
+                h = ""                     # 旧日志无 source 字段时的兜底
+            if h:
+                if open_turn is not None and not open_turn["hint"]:
+                    open_turn["hint"] = h
+                elif open_turn is None:
+                    last_hint = h
         elif typ == "turn/end":
             if is_owner:
                 reason = da.get("reason")

@@ -202,6 +202,70 @@ class TestOwnerSession(unittest.TestCase):
         self.assertEqual(episodes[0]["verdict"], "interrupted")
 
 
+class TestGoalHint(unittest.TestCase):
+    """S4 goal_hint 捕获：真话在 <user_message> 标签里，系统注入全剥掉。
+
+    生产形实拍（11-11）：user/message.data 只有 content/id/role/source 四键，
+    真话标签前的 [以下为系统信息…] 记忆回灌、日程、life_propose 指令全部不算；
+    time-context 快照是独立事件，整条跳过。"""
+
+    def _usermsg(self, seq, t, text, kind="plugin:dsh-onebot"):
+        return {"type": "user/message", "seq": seq, "time": t,
+                "data": {"role": "user", "id": "m%d" % seq,
+                         "source": {"kind": kind},
+                         "content": [{"type": "text", "text": text}]}}
+
+    def test_hint_from_user_message_tag(self):
+        body = ("\n[以下为系统信息，非用户发言：可能相关的记忆，自行判断是否需要提及]\n"
+                "- 记忆一（7天前）\n- 记忆二（6天前）\n\n"
+                "Use life_propose(turnId=\"x\", lifeEvents=[...])\n"
+                "<user_message qq=\"1792612052\" nickname=\"主人\">\n"
+                "把包里一件东西用 /store 存进箱子，同回合立刻对账\n</user_message>")
+        ev = [
+            {"type": "turn/start", "seq": 1, "time": 1000, "data": {"turn": 1}},
+            self._usermsg(2, 1010, body),
+            _call(3, 1020, "c1", "sd state"), _result(4, 1100, "c1"),
+            {"type": "turn/end", "seq": 5, "time": 1200, "data": {"turn": 1}},
+        ]
+        _, episodes, _ = build_session(ev, OWNER)
+        self.assertEqual(episodes[0]["goal_hint"],
+                         "把包里一件东西用 /store 存进箱子，同回合立刻对账")
+
+    def test_time_context_snapshot_never_becomes_hint(self):
+        ev = [
+            {"type": "turn/start", "seq": 1, "time": 1000, "data": {"turn": 1}},
+            self._usermsg(2, 1005,
+                          "Time sampled while preparing turn 1, step 2: 2026-11-11",
+                          kind="time-context"),
+            _call(3, 1020, "c1", "sd state"), _result(4, 1100, "c1"),
+            {"type": "turn/end", "seq": 5, "time": 1200, "data": {"turn": 1}},
+        ]
+        _, episodes, _ = build_session(ev, OWNER)
+        self.assertEqual(episodes[0]["goal_hint"], "")
+
+    def test_catalog_only_message_stripped_to_empty(self):
+        # harness 目录块单独成消息（cmb 55 块的形态）：剥掉后没剩真话=hint 空
+        cat = ("<available_skills>\n- `stardew-store`: Use when storing\n"
+               "</available_skills>")
+        ev = [
+            {"type": "turn/start", "seq": 1, "time": 1000, "data": {"turn": 1}},
+            self._usermsg(2, 1005, cat),
+            _call(3, 1020, "c1", "sd state"), _result(4, 1100, "c1"),
+            {"type": "turn/end", "seq": 5, "time": 1200, "data": {"turn": 1}},
+        ]
+        _, episodes, _ = build_session(ev, OWNER)
+        self.assertEqual(episodes[0]["goal_hint"], "")
+
+    def test_no_user_message_empty_hint(self):
+        ev = [
+            {"type": "turn/start", "seq": 1, "time": 1000, "data": {"turn": 1}},
+            _call(2, 1005, "c1", "sd state"), _result(3, 1100, "c1"),
+            {"type": "turn/end", "seq": 4, "time": 1200, "data": {"turn": 1}},
+        ]
+        _, episodes, _ = build_session(ev, OWNER)
+        self.assertEqual(episodes[0]["goal_hint"], "")
+
+
 class TestOwnershipGate(unittest.TestCase):
     def test_automation_session_writes_nothing(self):
         ev = [
