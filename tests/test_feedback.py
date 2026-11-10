@@ -310,6 +310,127 @@ class TestManifestWiring(unittest.TestCase):
         finally:
             del os.environ["EXPMEM_SKILLS_DIR"]
 
+    def test_derive_manifest_production_shape(self):
+        # cmb-P0（复审）：生产 user/message.data 没有 text 键，正文在
+        # content[0].text——旧回退条件 `not isinstance(text, str)` 被空串
+        # 骗过（空串也是 str）→ 生产恒 {}。夹具必须用生产形。
+        import os
+        import json as J
+        import tempfile
+        from expmem import api
+        d = tempfile.mkdtemp()
+        sd = os.path.join(d, "onebot-private-1792612052-test")
+        os.makedirs(sd)
+        msg = ("Here are your available skills:\n<available_skills>\n"
+               "- `stardew-store`: Use when storing items\n"
+               "- `agent-experience`: harness noise\n"
+               "</available_skills>\n")
+        ev = [
+            {"type": "turn/start", "time": 1, "data": {"turn": 9}},
+            # 生产形：data 只有 content/source/role/id，没有 text
+            {"type": "user/message", "time": 2,
+             "data": {"role": "user", "id": "m1", "source": {"q": "qq"},
+                      "content": [{"type": "text", "text": msg}]}},
+        ]
+        with open(os.path.join(sd, "session.v4.jsonl"), "w",
+                  encoding="utf-8") as f:
+            for e in ev:
+                f.write(J.dumps(e, ensure_ascii=False) + NL)
+        got = api.derive_manifest(d)
+        self.assertEqual(got, {("onebot-private-1792612052-test", 9):
+                               ["stardew-store", "agent-experience"]})
+
+    def test_settle_aggregates_same_turn_episodes(self):
+        # cmb-P1（复审）：同 (session,turn) 多集（gap 切分）——used 必须看
+        # 组内全部集动作的并集；verdict=任一集 success 即回合 success。
+        # 旧实现只看首集：e1 unknown 早退把 skey 结清 → e2 的动作没人看。
+        import os
+        import json as J
+        import tempfile
+        from expmem import api
+        d = tempfile.mkdtemp()
+        os.environ["EXPMEM_SKILLS_DIR"] = d
+        try:
+            import shutil
+            src = os.path.join(os.path.dirname(__file__), "..", "skills",
+                               "stardew-probe-after-action")
+            shutil.copytree(src, os.path.join(d, "stardew-probe-after-action"))
+            with open(os.path.join(d, ".injected.jsonl"), "w",
+                      encoding="utf-8") as f:
+                f.write(J.dumps({"ts": 0, "session": "s1", "turn": 1,
+                                 "names": ["stardew-probe-after-action"]}) + NL)
+            eps = [
+                {"session": "s1", "turn": 1, "verdict": "unknown",
+                 "episode_id": "e1", "actions": ["a_other"]},
+                {"session": "s1", "turn": 1, "verdict": "success",
+                 "episode_id": "e2", "actions": ["a1"]},
+            ]
+            acts = [{"id": "a_other", "verb": "near", "raw_path": "",
+                     "segment": "sd near 10"},
+                    {"id": "a1", "verb": "state", "raw_path": "",
+                     "segment": "sd state"}]
+            out = api.settle_auto_marks(eps, acts, d)
+            self.assertEqual(out["marked"],
+                             {"stardew-probe-after-action": 1})
+            self.assertEqual(out["reasons"], {"complete": 1})
+            front, _ = __import__("expmem.skills", fromlist=["load_skill"]) \
+                .load_skill(os.path.join(d, "stardew-probe-after-action",
+                                         "SKILL.md"))
+            self.assertEqual(front["counter"], 2)   # used=True 加分，非 not_used
+            out2 = api.settle_auto_marks(eps, acts, d)   # 同轮双集只结一次
+            self.assertEqual(out2["marked"], {})
+            self.assertEqual(out2["already_settled"], 1)
+        finally:
+            del os.environ["EXPMEM_SKILLS_DIR"]
+
+    def test_settle_version_gate_resettles_old_rows(self):
+        # cmb-P1-forward：settled 行带 v+reason；v 落后判据版（含旧格式无 v）
+        # = 视为未结算——S4 抬版本后历史「unknown 结清」要能重开。
+        import os
+        import json as J
+        import tempfile
+        from expmem import api
+        d = tempfile.mkdtemp()
+        os.environ["EXPMEM_SKILLS_DIR"] = d
+        try:
+            import shutil
+            src = os.path.join(os.path.dirname(__file__), "..", "skills",
+                               "stardew-probe-after-action")
+            shutil.copytree(src, os.path.join(d, "stardew-probe-after-action"))
+            with open(os.path.join(d, ".injected.jsonl"), "w",
+                      encoding="utf-8") as f:
+                f.write(J.dumps({"ts": 0, "session": "s1", "turn": 1,
+                                 "names": ["stardew-probe-after-action"]}) + NL)
+            # 旧格式行：没有 v → 不许封死，重判照跑
+            with open(os.path.join(d, ".settled.jsonl"), "w",
+                      encoding="utf-8") as f:
+                f.write(J.dumps({"session": "s1", "turn": 1}) + NL)
+            eps = [{"session": "s1", "turn": 1, "verdict": "success",
+                    "episode_id": "e1", "actions": ["a1"]}]
+            acts = [{"id": "a1", "verb": "state", "raw_path": "",
+                     "segment": "sd state"}]
+            out = api.settle_auto_marks(eps, acts, d)
+            self.assertEqual(out["marked"],
+                             {"stardew-probe-after-action": 1})
+            row = J.loads(open(os.path.join(d, ".settled.jsonl"),
+                               encoding="utf-8").read().strip().splitlines()[-1])
+            self.assertEqual(row["v"], api.SETTLE_VERDICT_V)
+            self.assertEqual(row["reason"], "complete")
+            out2 = api.settle_auto_marks(eps, acts, d)   # v=当前版 → 幂等照旧
+            self.assertEqual(out2["marked"], {})
+            self.assertEqual(out2["already_settled"], 1)
+            # 模拟 S4 抬版：v=1 的行重新开放结算
+            old_v = api.SETTLE_VERDICT_V
+            api.SETTLE_VERDICT_V = 2
+            try:
+                out3 = api.settle_auto_marks(eps, acts, d)
+                self.assertEqual(out3["marked"],
+                                 {"stardew-probe-after-action": 1})
+            finally:
+                api.SETTLE_VERDICT_V = old_v
+        finally:
+            del os.environ["EXPMEM_SKILLS_DIR"]
+
 
 if __name__ == "__main__":
     unittest.main()

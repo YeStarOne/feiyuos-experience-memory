@@ -226,8 +226,10 @@ def derive_manifest(root: str) -> dict:
             if typ != "user/message":
                 continue
             text = da.get("text") or ""
-            if not isinstance(text, str):
-                # v4 的 user/message 内容在 content[0].text
+            if not text or not isinstance(text, str):
+                # cmb-P0（复审）：生产 user/message.data 没有text键——
+                # 空串也是 str，旧条件永假=永远不读 content=生产恒 {}。
+                # 「空或非str」都走 content[0].text（夹具必须用生产形）。
                 c = da.get("content")
                 if isinstance(c, list):
                     text = "".join(x.get("text", "") for x in c
@@ -265,17 +267,23 @@ def record_skill_feedback(fb, shown_ids=()) -> dict:
     return {"applied": applied, "reason": reason, "front": new_front}
 
 
+SETTLE_VERDICT_V = 1
+# 判据版本：S4 把 success verdict（goal_hint）做出来时抬成 2——
+# settled 行带 v，读取时 v<当前版 视为未结算（历史 unknown 结清不许
+# 永久封死未来的重判/重放信用，cmb-P1-forward）。
+
+
 def settle_auto_marks(episodes, actions=None, skills_dir: str = None,
                       extra_manifest=None) -> dict:
-    """ACE 自动打标的唯一接线（intel 复审 #1 的落点）：逐个成功剧集，
-    used = 该 (session, turn) 注入清单里的卡名 ∩ **本集真实执行过的 tool_key**
-    （intel 复审 B：只按「递过」打标=回声室——进过 top-3 就 +1，counter 变成
-    「被注入次数」，越排前越注入越排前；机械代理=卡 tool_key ∈ 本集动作的
-    tool_key 集合，consolidate._tool_key 现成）。
-    幂等（intel 复审 A）：已结算的 (session, turn) 记进 .settled.jsonl，重放
-    全史也不重复计——append-only 仓的 settle 必须幂等，否则 counter 被重放
-    次数线性灌水。解析不动的 settled 行整条不结（A-MEM 守卫②同款）。
-    返回 {"marked": {name: n}, "skipped": n, "already_settled": n}。"""
+    """ACE 自动打标的唯一接线（intel 复审 #1 的落点）：逐个成功回合，
+    used = 该 (session, turn) 注入清单里的卡名 ∩ **组内全部集真实执行过的
+    tool_key 并集**（intel 复审 B：只按「递过」打标=回声室；cmb-P1：判单
+    单位=回合不是剧集——gap 切分的同键多集先聚合，首集之后的动作才算数）。
+    幂等（intel 复审 A）：已结算的 (session, turn) 记进 .settled.jsonl（带
+    v+reason），重放全史也不重复计；v 落后判据版本的行视为未结算。
+    解析不动的 settled 行整条不结（A-MEM 守卫②同款）。
+    返回 {"marked": {name: n}, "skipped": n, "already_settled": n,
+          "reasons": {"verdict:*"/"no_injected"/"complete": n}}。"""
     from . import feedback as _fb
     from .consolidate import _tool_key
     from .skills import load_skill, save_skill
@@ -290,6 +298,9 @@ def settle_auto_marks(episodes, actions=None, skills_dir: str = None,
                     continue
                 try:
                     row = json.loads(ln)
+                    # cmb-P1-forward：v 落后当前判据版=未结算（重判）
+                    if (row.get("v") or 0) < SETTLE_VERDICT_V:
+                        continue
                     settled.add((row.get("session"), row.get("turn")))
                 except Exception:
                     continue           # 坏行不挡（幂等宁可少结不半套）
@@ -325,25 +336,46 @@ def settle_auto_marks(episodes, actions=None, skills_dir: str = None,
     for a in (actions or []):
         keys_by_ep.setdefault(a.get("id"), _tool_key(a))
     marked, skipped, already = {}, 0, 0
+    reasons = {}
     new_settled = []
+    # cmb-P1（复审）：判单单位=回合，不是剧集——同 (session,turn) 的多集
+    # （gap 切分）先聚合再打标一次：used_keys=组内全部集动作的并集，
+    # verdict=组内任一集 success 即该回合 success。否则首集之后的动作
+    # （活日志实测 68%）对 used 检测不可见 → 好卡被记成「展示过但没用」。
+    groups, ep_order = {}, []
     for e in episodes or []:
         skey = (e.get("session"), e.get("turn"))
+        if skey not in groups:
+            groups[skey] = []
+            ep_order.append(skey)
+        groups[skey].append(e)
+    for skey in ep_order:
+        eps = groups[skey]
         if skey in settled:
             already += 1
             continue
-        if e.get("verdict") != "success":
+        verdicts = {e.get("verdict") for e in eps}
+        gverdict = ("success" if "success" in verdicts
+                    else "failure" if "failure" in verdicts else "unknown")
+        if gverdict != "success":
             skipped += 1
-            new_settled.append(skey)
+            reasons["verdict:" + gverdict] = \
+                reasons.get("verdict:" + gverdict, 0) + 1
+            new_settled.append(skey + ("verdict:" + gverdict,))
             settled.add(skey)
             continue
         injected = manifest.get(skey) or []
         if not injected:
             skipped += 1
-            new_settled.append(skey)
+            reasons["no_injected"] = reasons.get("no_injected", 0) + 1
+            new_settled.append(skey + ("no_injected",))
             settled.add(skey)
             continue
-        act_ids = set(e.get("actions") or [])
-        used_keys = {keys_by_ep[i] for i in act_ids if i in keys_by_ep}
+        used_keys = set()
+        for e in eps:                          # 组内全集的并集，不只首集
+            for i in (e.get("actions") or []):
+                if i in keys_by_ep:
+                    used_keys.add(keys_by_ep[i])
         complete = True        # intel 复审 A：settled 只在**全部落账后**写——
         for name in injected:  # 卡缺失/落盘失败 = 该回合不结，下次重试，
             if not os.path.isdir(os.path.join(sdir, name)):
@@ -370,14 +402,17 @@ def settle_auto_marks(episodes, actions=None, skills_dir: str = None,
             else:
                 skipped += 1                  # not_used 等终局判定：算结清
         if complete:
-            new_settled.append(skey)
-            settled.add(skey)                 # cmb-P2：同回合多集（gap 切分）不许同轮双标
+            reasons["complete"] = reasons.get("complete", 0) + 1
+            new_settled.append(skey + ("complete",))
+            settled.add(skey)                 # cmb-P2：同回合多集（gap 切分）同轮单标
     if new_settled:
         try:
             with open(settled_path, "a", encoding="utf-8") as f:
-                for s, t in new_settled:
-                    f.write(json.dumps({"session": s, "turn": t},
+                for s, t, why in new_settled:
+                    f.write(json.dumps({"session": s, "turn": t,
+                                        "v": SETTLE_VERDICT_V, "reason": why},
                                        ensure_ascii=False, sort_keys=True) + "\n")
         except OSError:
             pass
-    return {"marked": marked, "skipped": skipped, "already_settled": already}
+    return {"marked": marked, "skipped": skipped, "already_settled": already,
+            "reasons": reasons}
