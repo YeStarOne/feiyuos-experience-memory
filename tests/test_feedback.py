@@ -187,20 +187,37 @@ class TestManifestWiring(unittest.TestCase):
                 f.write(J.dumps({"ts": 0, "session": "s1", "turn": 1,
                                  "names": ["stardew-probe-after-action"]}) + "\n")
             eps = [
+                # 命中：清单有 + 本集真的执行了 stardew.state 的动作
                 {"session": "s1", "turn": 1, "verdict": "success",
-                 "episode_id": "e1"},                     # 命中：打标
+                 "episode_id": "e1", "actions": ["a1"]},
+                # 清单没有 → skip（递没递是清单说了算）
                 {"session": "s1", "turn": 2, "verdict": "success",
-                 "episode_id": "e2"},                     # 清单没有 → skip
+                 "episode_id": "e2", "actions": []},
+                # 失败 → skip
                 {"session": "s1", "turn": 1, "verdict": "failure",
-                 "episode_id": "e3"},                     # 失败 → skip
+                 "episode_id": "e3", "actions": ["a1"]},
+                # intel-B 回声室夹具：递了但本集零动作（tool_key 对不上）→ 不标
+                {"session": "s1", "turn": 1, "verdict": "success",
+                 "episode_id": "e4", "actions": []},
             ]
-            out = api.settle_auto_marks(eps, d)
+            acts = [{"id": "a1", "verb": "state", "raw_path": "",
+                     "segment": "sd state"}]
+            out = api.settle_auto_marks(eps, acts, d)
             self.assertEqual(out["marked"], {"stardew-probe-after-action": 1})
-            self.assertEqual(out["skipped"], 2)
+            self.assertEqual(out["skipped"], 3)
             front, _ = __import__("expmem.skills", fromlist=["load_skill"]) \
                 .load_skill(os.path.join(d, "stardew-probe-after-action",
                                          "SKILL.md"))
             self.assertEqual(front["counter"], 2)
+            # intel-A 幂等：全史重放三遍也只结一次
+            for _ in range(3):
+                out2 = api.settle_auto_marks(eps, acts, d)
+            self.assertEqual(out2["marked"], {})
+            self.assertGreaterEqual(out2["already_settled"], 3)
+            front2, _ = __import__("expmem.skills", fromlist=["load_skill"]) \
+                .load_skill(os.path.join(d, "stardew-probe-after-action",
+                                         "SKILL.md"))
+            self.assertEqual(front2["counter"], 2)     # 不被重放灌水
         finally:
             del os.environ["EXPMEM_SKILLS_DIR"]
 

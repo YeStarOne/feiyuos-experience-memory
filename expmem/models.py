@@ -31,6 +31,7 @@ class Action:
     job_id: str = ""       # 后台 job id（bash-xxxx）
     job_status: str = ""   # completed|killed|…（job/settled 或 job_output 尾巴）
     job_exit: int = None   # 退出码（拿不到为 None，别写成 0）
+    job_done_ts: int = None  # job/settled 的 finishedAt（cmb：采信条件拿事件时间判，别拿来源判）
 
     def row(self) -> dict:
         return asdict(self)

@@ -112,21 +112,27 @@ def _head(txt: str, limit: int = 160) -> str:
     return (flat[:limit] + (" ⟨%s⟩" % digest if digest else ""))[:limit + 240]
 
 
-def _game_day(acts, ambig_seen=None, ep_key="") -> str:
+def _game_day(acts, ambig_seen=None, ep_key="", t_from=0, t_to=0) -> str:
     """从本集探针 out_head 抓游戏日，存「冬25」样式（对齐手册 §9 双标）。
 
-    只看 state 类读的动作（farm/shot 的输出里日期混着别的数字），文本日提取
-    **跳过 out_source=job_output 的迟到文本**（cmb P2：job 文本可能来自窗口外
-    的另一天——她睡过夜之后的迟到 state，宁空勿猜；JSON 摘要兜底不受此限，
-    那是命令自身执行时的结构化状态）。
-    多日歧义按既定规则弃；ambig_seen 是**集合**（cmb 实锤：同一集在 _close 和
-    job 回填各判一次，int 计数会把 13 个歧义集数成 26+——对外只报独立集数）。"""
+    只看 state 类读的动作（farm/shot 的输出里日期混着别的数字）。
+    采信判据拿**事件时间**判，不拿来源判（cmb finishedAt 实锤 11-11：按来源
+    一刀切和「唯一证据例外」各错一边——job 文本当且仅当 finishedAt∈窗口才
+    采信；窗口内完成的 job 引入第二日=真跨日窗口→歧义，不许用回填把跨日
+    窗口填成假单日）。JSON 摘要兜底走同一条时间规则（它曾完全不设限，是
+    P2 的真残留缝）。ambig_seen 是集合：同集重复判不重复计。"""
+    def _admits(a):
+        if getattr(a, "out_source", "") != "job_output":
+            return True
+        done = getattr(a, "job_done_ts", None)
+        if not done or not t_from or not t_to:
+            return False                 # 拿不到完成时刻=不可采信（宁空勿猜）
+        return t_from <= done <= t_to
+
     days = []
     for a in acts:
-        if not _is_state_read(a):
+        if not _is_state_read(a) or not _admits(a):
             continue
-        if getattr(a, "out_source", "") == "job_output":
-            continue                      # 迟到文本不进日提取（P2，见 docstring）
         h = getattr(a, "out_head", "") or ""
         if not h:
             continue
@@ -139,8 +145,10 @@ def _game_day(acts, ambig_seen=None, ep_key="") -> str:
     if len(days) > 1:
         if ambig_seen is not None:
             ambig_seen.add(ep_key)        # 独立集数：同集重复判不重复计
-        return ""          # 跨日窗口：弃（cmb 复算口径 14 窗）
+        return ""          # 跨日窗口：弃
     for a in acts:
+        if not _admits(a):
+            continue
         h = getattr(a, "out_head", "") or ""
         if not h:
             continue
@@ -152,7 +160,7 @@ def _game_day(acts, ambig_seen=None, ep_key="") -> str:
 
 
 def _apply_job_outputs(actions, episodes, job_bind, bg_calls, job_out,
-                       job_settled, stats, ambig_seen) -> int:
+                       job_settled, stats, ambig_seen, job_settled_ts) -> int:
     """把 job_output 的终态文本回填到**被后台化**的动作，并重判受影响的剧集。
 
     只回填终态（completed）：running 的文本是半截，killed 的会被她中途打断
@@ -182,6 +190,7 @@ def _apply_job_outputs(actions, episodes, job_bind, bg_calls, job_out,
         a.out_head = _head(txt)
         a.out_sha = hashlib.sha1(txt.encode("utf-8")).hexdigest()[:16]
         a.out_source = "job_output"
+        a.job_done_ts = job_settled_ts.get(jid)
         touched += 1
     stats["job_killed"] = killed
     stats["job_pending"] = pending
@@ -189,7 +198,9 @@ def _apply_job_outputs(actions, episodes, job_bind, bg_calls, job_out,
         return 0
     for row in episodes:
         acts = [by_id[i] for i in row["actions"] if i in by_id]
-        row["game_day"] = _game_day(acts, ambig_seen, row.get("episode_id", ""))
+        row["game_day"] = _game_day(acts, ambig_seen, row.get("episode_id", ""),
+                                    t_from=row.get("t_from") or 0,
+                                    t_to=row.get("t_to") or 0)
         classify_episode(row, acts)            # 探针可用性/成败按真终态重判
     return touched
 
@@ -214,6 +225,7 @@ def build_session(events, session_name: str):
     bg_calls = set()      # 结果文本是「转到后台」通知的 callId（只有这些需要终态回填）
     job_out = {}          # jobId -> job_output 拿到的终态文本
     job_settled = {}      # jobId -> job/settled 的 status
+    job_settled_ts = {}   # jobId -> finishedAt（cmb：采信拿事件时间判）
     jo_call = {}          # job_output 的 callId -> jobId
     open_turn = None      # 按文件顺序开合，不按回合号
     part = 0              # gap 切分的分片号
@@ -234,7 +246,9 @@ def build_session(events, session_name: str):
         row["act_count"] = len(acts)
         row["act_count_poll_free"] = sum(1 for a in acts if not a.poll_repeat)
         row["game"] = any(a.verb for a in acts)
-        row["game_day"] = _game_day(acts, ambig_seen, row.get("episode_id", ""))
+        row["game_day"] = _game_day(acts, ambig_seen, row.get("episode_id", ""),
+                                    t_from=row.get("t_from") or 0,
+                                    t_to=row.get("t_to") or 0)
         classify_episode(row, acts)  # S1：verdict/probe_status/failure_class
         episodes.append(row)
         if row["game"]:
@@ -269,6 +283,9 @@ def build_session(events, session_name: str):
         elif typ == "job/settled":
             if da.get("jobId"):
                 job_settled[da["jobId"]] = str(da.get("status") or "")
+                fin = da.get("finishedAt") or da.get("finished_at")
+                if fin:
+                    job_settled_ts[da["jobId"]] = int(fin)
         elif typ == "tool/call":
             stats["tool_calls"] += 1
             name = da.get("name")
@@ -390,6 +407,7 @@ def build_session(events, session_name: str):
     stats["job_backgrounded"] = sum(1 for a in actions if a.call_id in bg_calls)
     stats["game_day_ambiguous"] = len(ambig_seen)
     stats["job_recovered"] = _apply_job_outputs(actions, episodes, job_bind, bg_calls,
-                                                job_out, job_settled, stats, ambig_seen)
+                                                job_out, job_settled, stats,
+                                                ambig_seen, job_settled_ts)
     stats["game_day_ambiguous"] = len(ambig_seen)   # 回填重判后再取终值
     return actions, episodes, stats

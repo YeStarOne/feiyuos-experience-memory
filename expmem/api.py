@@ -217,32 +217,98 @@ def record_skill_feedback(fb, shown_ids=()) -> dict:
     return {"applied": applied, "reason": reason, "front": new_front}
 
 
-def settle_auto_marks(episodes, skills_dir: str = None) -> dict:
+def settle_auto_marks(episodes, actions=None, skills_dir: str = None) -> dict:
     """ACE 自动打标的唯一接线（intel 复审 #1 的落点）：逐个成功剧集，
-    used = 该 (session, turn) 注入清单里的卡名（api.injected_names）∩ 这张卡存在。
-    verdict=success 且 used=True 才落 weak_positive；其余一律不动。
-    返回 {"marked": {name: n}, "skipped": n}。"""
+    used = 该 (session, turn) 注入清单里的卡名 ∩ **本集真实执行过的 tool_key**
+    （intel 复审 B：只按「递过」打标=回声室——进过 top-3 就 +1，counter 变成
+    「被注入次数」，越排前越注入越排前；机械代理=卡 tool_key ∈ 本集动作的
+    tool_key 集合，consolidate._tool_key 现成）。
+    幂等（intel 复审 A）：已结算的 (session, turn) 记进 .settled.jsonl，重放
+    全史也不重复计——append-only 仓的 settle 必须幂等，否则 counter 被重放
+    次数线性灌水。解析不动的 settled 行整条不结（A-MEM 守卫②同款）。
+    返回 {"marked": {name: n}, "skipped": n, "already_settled": n}。"""
     from . import feedback as _fb
+    from .consolidate import _tool_key
     from .skills import load_skill, save_skill
-    marked, skipped = {}, 0
+    sdir = skills_dir or _skills_dir()
+    settled_path = os.path.join(sdir, ".settled.jsonl")
+    settled = set()
+    try:
+        with open(settled_path, encoding="utf-8") as f:
+            for ln in f:
+                ln = ln.strip()
+                if not ln:
+                    continue
+                try:
+                    row = json.loads(ln)
+                    settled.add((row.get("session"), row.get("turn")))
+                except Exception:
+                    continue           # 坏行不挡（幂等宁可少结不半套）
+    except OSError:
+        pass
+    # manifest 一次读成索引（intel 顺带：逐集全量读是 O(集数×清单行数)）
+    manifest = {}
+    mpath = os.path.join(sdir, ".injected.jsonl")
+    try:
+        with open(mpath, encoding="utf-8") as f:
+            for ln in f:
+                ln = ln.strip()
+                if not ln:
+                    continue
+                try:
+                    row = json.loads(ln)
+                    manifest.setdefault((row.get("session"), row.get("turn")),
+                                        []).extend(row.get("names") or [])
+                except Exception:
+                    continue
+    except OSError:
+        pass
+    # 本集动作的 tool_key 集合
+    keys_by_ep = {}
+    for a in (actions or []):
+        keys_by_ep.setdefault(a.get("id"), _tool_key(a))
+    marked, skipped, already = {}, 0, 0
+    new_settled = []
     for e in episodes or []:
+        skey = (e.get("session"), e.get("turn"))
+        if skey in settled:
+            already += 1
+            continue
         if e.get("verdict") != "success":
             skipped += 1
+            new_settled.append(skey)
             continue
-        used = injected_names(skills_dir, e.get("session") or "",
-                              e.get("turn") if e.get("turn") is not None else None)
-        if not used:
+        injected = manifest.get(skey) or []
+        if not injected:
             skipped += 1
+            new_settled.append(skey)
             continue
-        for name in used:
-            path = os.path.join(skills_dir or _skills_dir(), name, "SKILL.md")
+        act_ids = set(e.get("actions") or [])
+        used_keys = {keys_by_ep[i] for i in act_ids if i in keys_by_ep}
+        hit = False
+        for name in injected:
+            path = os.path.join(sdir, name, "SKILL.md")
             if not os.path.exists(path):
                 skipped += 1
                 continue
             front, body = load_skill(path)
+            card_key = front.get("tool_key") or ""
+            used = bool(card_key) and card_key in used_keys   # 「用了」≠「递了」
             new_front, applied, _ = _fb.auto_from_episode(front, "success",
-                                                          used=True)
+                                                          used=used)
             if applied:
                 save_skill(path, new_front, body)
                 marked[name] = marked.get(name, 0) + 1
-    return {"marked": marked, "skipped": skipped}
+                hit = True
+            else:
+                skipped += 1
+        new_settled.append(skey)
+    if new_settled:
+        try:
+            with open(settled_path, "a", encoding="utf-8") as f:
+                for s, t in new_settled:
+                    f.write(json.dumps({"session": s, "turn": t},
+                                       ensure_ascii=False, sort_keys=True) + "\n")
+        except OSError:
+            pass
+    return {"marked": marked, "skipped": skipped, "already_settled": already}

@@ -47,6 +47,11 @@ def main(argv=None):
     op.add_argument("--cards", required=True, help="卡目录（~/.dsh/skills）")
     op.add_argument("--actions", required=True, help="replay 产物 actions.jsonl")
     op.add_argument("--episodes", required=True, help="replay 产物 episodes.jsonl")
+    tp = sub.add_parser("settle", help="ACE 自动打标结算（幂等：已结算回合跳过）")
+    tp.add_argument("root", help="~/.dsh/sessions/<workspace> 目录")
+    tp.add_argument("--out", required=True, help="replay 产物目录（幂等复用）")
+    tp.add_argument("--skills", default=None,
+                    help="卡目录（默认 EXPMEM_SKILLS_DIR 或 ~/.dsh/skills）")
     args = ap.parse_args(argv)
     if args.cmd == "replay":
         _print(api.replay(args.root, args.out))
@@ -73,6 +78,10 @@ def main(argv=None):
     elif args.cmd == "orphan":
         from .orphan import audit_dirs
         _print(audit_dirs(args.cards, args.actions, args.episodes))
+    elif args.cmd == "settle":
+        actions, episodes = _load_replay(args.root, args.out)
+        _print(api.settle_auto_marks(episodes, actions,
+                                     skills_dir=args.skills or api._skills_dir()))
 
 
 def _load_replay(root, out):

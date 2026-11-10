@@ -40,9 +40,11 @@ def _registered(seq, t, jid, cid):
             "data": {"jobId": jid, "kind": "bash", "toolCall": {"callId": cid, "rootCallId": cid}}}
 
 
-def _settled(seq, t, jid, status="completed"):
-    return {"type": "job/settled", "seq": seq, "time": t,
-            "data": {"jobId": jid, "status": status, "detail": "exit code: 0"}}
+def _settled(seq, t, jid, status="completed", fin=None):
+    d = {"jobId": jid, "status": status, "detail": "exit code: 0"}
+    if fin is not None:
+        d["finishedAt"] = fin
+    return {"type": "job/settled", "seq": seq, "time": t, "data": d}
 
 
 def _turn(seq, t, turn=1, kind=None):
@@ -82,8 +84,9 @@ class TestJobOutputCapture(unittest.TestCase):
         # 通知文本不许冒充输出：终态回来前那条剧集不能算「探针可用」
         self.assertEqual(st["job_backgrounded"], 1)
         self.assertEqual(st["job_recovered"], 1)
-        # 回填后重判：游戏日从终态的 JSON 摘要里补上
-        self.assertEqual(episodes[0]["game_day"], "冬25")
+        # 回填后重判：终态文本回来了，但它属于 job 完成的那个时刻——
+        # 本夹具没给 finishedAt（拿不到=不可采信，cmb 时间判据），日不填
+        self.assertEqual(episodes[0]["game_day"], "")
 
     def test_unrecovered_notice_is_not_a_usable_probe(self):
         jid = "bash-deadbeef00000001"
@@ -141,6 +144,59 @@ class TestJobOutputCapture(unittest.TestCase):
         # 天，实锤=春16窗口捞到春17早晨的迟到 state）——宁空勿猜；JSON 摘要兜底
         # 不受限（那是命令自身执行时的结构化状态）
         self.assertEqual(episodes[0]["game_day"], "")
+
+
+class TestJobTimeRule(unittest.TestCase):
+    """cmb finishedAt 实锤（11-11）：job 文本采信拿事件时间判——
+    窗口内完成=窗口内证据（debca 形）；窗口内完成的 job 引入第二日=真跨日
+    窗口→歧义（01ef 形，防「用回填把跨日窗口填成假单日」）；窗口外完成→不采信。"""
+
+    def _run(self, fin, job_text):
+        jid = "bash-ab12cd34ef567788"
+        ev = [
+            _turn(1, 1000),
+            _call(2, 1005, "c1", "sd raw /state"),
+            _registered(3, 1006, jid, "c1"),
+            _result(4, 61005, "c1", NOTICE % "ab12cd34ef567788"),
+            # 同回合再来一条**直读**（不经 job），窗口内本地的唯一日证据
+            _call(5, 61010, "c2", "sd state"),
+            _result(6, 61060, "c2", "Farm(52,16) 冬25 19:40 | 体力100/270"),
+            _turn(7, 61100, kind="completed"),
+            _turn(8, 62000),
+            _jo_call(9, 62005, "j1", jid),
+            _result(10, 62010, "j1", job_text),
+            _settled(11, 62011, jid, "completed", fin=fin),
+            _turn(12, 62100, kind="completed"),
+        ]
+        return build_session(ev, OWNER)
+
+    def test_in_window_job_sole_day_fills(self):
+        # debca 形：job 在窗口内完成（51000 ∈ [1000,61100]）→ 唯一日采信
+        jtext = "Farm(52,16) 冬25 20:10 | 体力99/270\n[status: completed, exit code: 0]"
+        _, episodes, st = self._run(51000, jtext)
+        self.assertEqual(episodes[0]["game_day"], "冬25")
+        self.assertEqual(st["game_day_ambiguous"], 0)
+
+    def test_in_window_job_second_day_is_ambiguous(self):
+        # 01ef 形：窗口内完成的 job 带来第二日（春17）→ 真跨日窗口，宁空勿猜，
+        # 不许用回填把跨日窗口填成假单日（按来源一刀切就会填成 冬25=错）
+        jtext = "Farm(52,16) 春17 07:40 | 体力220/270\n[status: completed, exit code: 0]"
+        _, episodes, st = self._run(51000, jtext)
+        self.assertEqual(episodes[0]["game_day"], "")
+        self.assertEqual(st["game_day_ambiguous"], 1)
+
+    def test_out_of_window_job_not_counted(self):
+        # 窗口外完成（1794059131151 >> 61100）→ 不采信，窗口本地日照常用
+        jtext = "Farm(52,16) 春17 07:40 | 体力220/270\n[status: completed, exit code: 0]"
+        _, episodes, st = self._run(1794059131151, jtext)
+        self.assertEqual(episodes[0]["game_day"], "冬25")
+        self.assertEqual(st["game_day_ambiguous"], 0)
+
+    def test_recovered_text_without_finished_at_not_counted(self):
+        # 拿不到 finishedAt 的回填：不可采信（宁空勿猜的字面执行）
+        jtext = "Farm(52,16) 春17 07:40 | 体力220/270\n[status: completed, exit code: 0]"
+        _, episodes, _ = self._run(None, jtext)
+        self.assertEqual(episodes[0]["game_day"], "冬25")   # 直读的 冬25 仍在
 
 
 class TestHeadDigest(unittest.TestCase):
