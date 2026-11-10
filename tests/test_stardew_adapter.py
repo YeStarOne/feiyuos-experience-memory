@@ -44,6 +44,26 @@ class TestVerbCalls(unittest.TestCase):
         cmd = "echo '今天学了 sd state 的用法'"
         self.assertEqual(sd.verb_calls(cmd), [])
 
+    def test_timeout_prefixed_calls_seen(self):
+        # ⭐925-928 实锤（11-11）：桥死后她学会给每条 sd 调用加 `timeout N`——
+        # 锚点不认 timeout 前缀 ⇒ 她整个「带超时的谨慎调用」时代对采集层隐形
+        # （turn 928 二十条调用 0 动作、turn 926 三条 state 探针全丢）
+        self.assertEqual([v for v, _ in sd.verb_calls(
+            "cd ~/qq-workspace && timeout 60 ./bin/sd state 2>&1|tail -1")],
+            ["state"])
+        self.assertEqual([v for v, _ in sd.verb_calls(
+            "timeout 50 ./bin/sd warp Farm 64 17 2>&1|tail -1; "
+            "sleep 5; timeout 50 ./bin/sd near 10")],
+            ["warp", "near"])
+        self.assertEqual([v for v, _ in sd.verb_calls(
+            "nohup ./bin/sd fishbot_enable; nice -n 5 ./bin/sd heal")],
+            ["fishbot_enable", "heal"])
+        # raw 路径两把尺都照常（RAW_RE 本来就不看前缀）
+        self.assertEqual(sd.raw_paths(
+            "timeout 50 ./bin/sd raw /store '{\"x\":63}' 2>&1"), ["/store"])
+        self.assertEqual(sd.anchored_raw_paths(
+            "x=$(timeout 30 ./bin/sd raw /store '{}')"), ["/store"])
+
 
 class TestEndpoint(unittest.TestCase):
     def test_reads(self):

@@ -20,13 +20,18 @@ READ_VERBS = frozenset("state inv near shot farm help".split())
 SD_RE = re.compile(
     # P2-10：锚点加 `(` —— `(sd state)` / `x=$(sd state)` 是真调用，此前被静默丢
     # （与白名单同类损失）；raw 的路径另有 RAW_RE/RAW_ANCHOR_RE 两把尺，重叠是有意的。
-    r"(?:^|[;&|(\n])\s*(?:[\w./~-]*/)?sd(?:\.py)?\s+(?:--?[a-z_]+\s+)*([a-z_]+)"
+    # ⭐925-928 实锤（11-11）：她学会给 sd 调用加 `timeout N` 前缀（桥死时挂过
+    # 60s 教训）——timeout/nohup/env/nice/sudo 包装不是新命令，必须跳过包装
+    # 再看 sd，否则她整个「带超时的谨慎调用」时代对采集层隐形。
+    r"(?:^|[;&|(\n])\s*(?:(?:timeout\s+[\w.]+|nohup|env\s+\S+|nice\s+(?:-n\s+)?-?\d+|sudo)"
+    r"\s+)*(?:[\w./~-]*/)?sd(?:\.py)?\s+(?:--?[a-z_]+\s+)*([a-z_]+)"
 )
 RAW_RE = re.compile(r"(?:[\w./~-]*/)?sd(?:\.py)?\s+raw\s+(\S+)")
 # 锚定的 raw 子 shell 调用：$(sd raw /store …) 或 ; sd raw /x —— 是真动作，要进 actions
 # （11-11 实跑教训：3 条 stored:[] 里 2 条的 /store 藏在子 shell 里，verb 扫描看不见）
 RAW_ANCHOR_RE = re.compile(
-    r"(?:^|[;&|(]\s*(?:\$\(\s*)?)(?:[\w./~-]*/)?sd(?:\.py)?\s+raw\s+(\S+)")
+    r"(?:^|[;&|(]\s*(?:\$\(\s*)?(?:(?:timeout\s+[\w.]+|nohup|env\s+\S+|nice\s+(?:-n\s+)?-?\d+|sudo)\s+)*)"
+    r"(?:[\w./~-]*/)?sd(?:\.py)?\s+raw\s+(\S+)")
 HEREDOC_RE = re.compile(r"<<-?\s*['\"]?(\w+)['\"]?")
 RAW_TAIL_RE = re.compile(r"[);;&|`].*$")  # 子 shell 右括号 / 分隔符尾巴
 
