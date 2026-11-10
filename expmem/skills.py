@@ -51,8 +51,10 @@ SEMANTIC_FIELDS = ("description", "retrieval_anchor", "task_query", "tool_key",
 # 0 命中+无已知拒收夹具才是假绿）。闸只扫正文，**绝不扫 evidence**——证据必须
 # 逐字保留（点回 actions.jsonl），现有卡 evidence 里就有 chestAt 坐标，必须放行。
 BODY_COORD_RE = re.compile(r"[（(]\s*-?\d{1,4}\s*[,，]\s*-?\d{1,4}\s*[）)]")
+# JSON 键形态要吃进 shell 转义版（首跑实锤：她真实命令里是 \"x\":52,\"y\":13，
+# 反斜杠会把朴素版漏掉——cmb 的提醒：形态要对真产物核）
 BODY_COORD_JSON_RE = re.compile(
-    r"""["']x["']\s*:\s*-?\d+\s*,\s*["']y["']\s*:\s*-?\d+""")
+    r"""\\*["']x\\*["']\s*:\s*-?\d+\s*,\s*\\*["']y\\*["']\s*:\s*-?\d+""")
 BODY_MONEY_G_RE = re.compile(r"(?<!\d)\d[\d,]{0,8}\s*g(?![a-zA-Z0-9])")
 BODY_MONEY_CN_RE = re.compile(r"(?:钱|金币|gold)\s*[:：]?\s*\d[\d,]{2,}")
 
