@@ -43,11 +43,16 @@ def orphan_report(cards=(), actions=(), episodes=()) -> dict:
             return act_by_triple.get(key)
         return None
 
-    ghost_action, ghost_episode, cross_episode, stale_episode = [], [], [], []
+    ghost_action, ghost_episode, cross_episode = [], [], []
+    stale_episode, no_anchor = [], []
     for f in (cards or []):
         name = f.get("name", "?")
         for ev in f.get("evidence") or []:
             aid, eid = ev.get("action"), ev.get("episode")
+            if not aid and not ev.get("call_id"):
+                # 无锚证据（bench 摘要这类非动作行）：如实单列，不算孤儿
+                no_anchor.append({"card": name, "episode": eid})
+                continue
             a = _resolve_action(ev)
             if a is None:
                 ghost_action.append({"card": name, "action": aid})
@@ -78,6 +83,7 @@ def orphan_report(cards=(), actions=(), episodes=()) -> dict:
         "card_ghost_episode": ghost_episode,
         "card_cross_episode": cross_episode,
         "card_stale_episode_id": stale_episode,
+        "card_evidence_no_anchor": no_anchor,
         "episode_ghost_action": ep_ghost_action,
         "action_without_episode": no_episode,
         "counts": {

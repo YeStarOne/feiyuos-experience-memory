@@ -80,7 +80,10 @@ def scan_candidates(episodes, actions, now_game_day=""):
             dropped.append({"episode": e.get("episode_id"), "reason": "episode_missing"})
             continue
         cmd = _clean(a.get("segment") or "")
-        out = _clean(a.get("out_head") or "")
+        # 证据优先用 outcome.signal（判定时命中的那 80 字），比 out_head 头 120 字
+        # 更贴信号本体——首跑实锤：stored:[] 常在 JSON 中段，硬切头会切掉信号。
+        out = _clean((e.get("outcome") or {}).get("signal")
+                     or a.get("out_head") or "")
         if cmd is None or out is None:
             dropped.append({"episode": e.get("episode_id"), "reason": "agpl_guard"})
             continue
@@ -122,20 +125,31 @@ def write_candidates(specs, dropped, out_path: str) -> int:
 
 STORED_NONEMPTY_RE = re.compile(r"stored\"?\s*:\s*\[\s*[^ \]]")
 HARVEST_COUNT_RE = re.compile(r"(?:收|harvest|collect)[^\d]{0,12}(\d+)", re.I)
+# 首跑实锤（11-11）：买对不能拿状态行前缀的「钱N」当扣款——那是余额不是 charge，
+# 「Missing parameter: id」的失败买被误标成功。扣款只认 JSON 字段。
+from .outcome import CHARGE_JSON_RE as _BUY_CHARGE_RE  # noqa: E402
 
 # GMemory 阈值 5 起步的机械版（intel 11-11 交付）：证据太薄的键不开卡——
 # 「卡册里没有含对账的成功轨之前，归纳机器不开工，避免空对空归纳」。
 # 他们的单位是任务数（5），我们的是证据行数（3 行 ≈ 一次发生+一次复读+一次变体）。
 MIN_SPEC_EVIDENCE = 3
 
+# 首跑实锤（11-11）：同一条 bash 链里所有子动作共享同一段返回文本——读动作
+# （inv/state）会「白捡」写动作的效果证据，把成功轨记到 stardew.inv 名下。
+# 归因规则：同一 call 内优先写动作；call 内全是读才轮到读。
+_WRITE_VERBS = frozenset("warp move act use water plant harvest dig sleep buy "
+                         "sell key wait raw".split())
+
 
 def scan_success(episodes, actions):
     """成功轨证据：效果能机械核实才收，宁可空轨不硬凑。
     - store 存进：out 含非空 stored:[…]（stored_empty 的反演）
     - 收到：收/harvest/collect 后跟 ≥1（harvest_zero_with_ready 的反演）
-    - 买对：buy 有扣款（charge>0）且本集未被 wrong_arg 判失败（buy_double_charge 的反演）
+    - 买对：buy 输出里 JSON 扣款字段 totalCost/charge（buy_double_charge 的反演；
+      状态行前缀的「钱N」是余额不是扣款，绝不采）
     成功轨同样要求动作点得回（episode 里实际执行的那条 action 行）。"""
     act_by_id = {a.get("id"): a for a in (actions or [])}
+    cand = []           # (session, call_id) -> 首个匹配（含动词信息）
     rows = []
     for e in (episodes or []):
         if e.get("verdict") == "failure":
@@ -152,18 +166,30 @@ def scan_success(episodes, actions):
                 m = HARVEST_COUNT_RE.search(h)
                 if m and int(m.group(1)) >= 1:
                     rule = "harvest_count_%s" % m.group(1)
-                elif (a.get("verb") == "buy" or a.get("raw_path") == "/buy") \
-                        and _charge(h):
-                    rule = "buy_charged_%d" % _charge(h)
+                elif (a.get("verb") == "buy" or a.get("raw_path") == "/buy"):
+                    mc = _BUY_CHARGE_RE.search(h)
+                    if mc:
+                        rule = "buy_charged_%s" % mc.group(1)
             if rule:
                 rows.append({"episode": e.get("episode_id"), "action": aid,
                              "session": a.get("session") or "",
                              "call_id": a.get("call_id") or "",
                              "sub_idx": a.get("sub_idx", 0),
+                             "verb": a.get("verb") or "",
+                             "is_write": (a.get("verb") or "") in _WRITE_VERBS,
                              "cmd": a.get("segment") or "", "out": h,
                              "verdict": "success", "rule": rule,
                              "game_day": e.get("game_day") or ""})
-    return rows
+    # 同 call 归因：有写动作时读动作让位（写动作是效果的制造者）
+    by_call = {}
+    for r in rows:
+        by_call.setdefault((r["session"], r["call_id"]), []).append(r)
+    out = []
+    for group in by_call.values():
+        writes = [r for r in group if r["is_write"]]
+        keep = writes if writes else group
+        out.extend(keep)
+    return out
 
 
 # ---------- AWM 整份重写归纳 ----------

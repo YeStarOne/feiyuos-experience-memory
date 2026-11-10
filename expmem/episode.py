@@ -55,6 +55,17 @@ def _sha(s: str) -> str:
     return hashlib.sha1(s.encode("utf-8")).hexdigest()[:16]
 
 
+# game_day 只信 state 类读（farm/shot 的输出里日期混着别的数字，见 _game_day 注释）
+STATE_READ_VERBS = frozenset("state inv near".split())
+STATE_READ_RAW = ("/state", "/inv")
+
+
+def _is_state_read(a) -> bool:
+    rp = getattr(a, "raw_path", "") or ""
+    return (getattr(a, "verb", "") or "") in STATE_READ_VERBS \
+        or rp.startswith(STATE_READ_RAW)
+
+
 def _digest(txt: str, limit: int = 90) -> str:
     """把 JSON 结果里我们关心的键压成一段**合法 JSON 片段**（喂给 out_head 尾部）。
 
@@ -104,12 +115,16 @@ def _head(txt: str, limit: int = 160) -> str:
 def _game_day(acts, stats=None) -> str:
     """从本集探针 out_head 抓游戏日，存「冬25」样式（对齐手册 §9 双标）。
 
-    优先一行摘要（短/长格式都吃），JSON season/dayOfMonth 兜底。
+    只看 state 类读的动作（cmb 对账口径：state reads only——farm_report 会把
+    每格作物的成熟日连同坐标一起打印，锚定正则也躲不开，首跑实测
+    fill=47/ambig=27 偏离锚 61/14 就是它混进来的），JSON season/dayOfMonth 兜底。
     多日歧义按既定规则弃：一集窗口里出现两个不同游戏日（跨日回合）→
     宁空勿猜；stats 可选传入时把弃掉的窗口计数（game_day_ambiguous，
     cmb 对账锚：fill=61 ∧ discarded=14 才算两边全对上）。"""
     days = []
     for a in acts:
+        if not _is_state_read(a):
+            continue
         h = getattr(a, "out_head", "") or ""
         if not h:
             continue
