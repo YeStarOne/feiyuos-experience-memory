@@ -129,10 +129,42 @@ def commit_episode(ep) -> str:
     raise NotImplementedError("observe-only 阶段：剧集只走 replay")
 
 
-def retrieve_skills(query, top_k: int = 3):
-    """只返目录行（name+when+confidence+state），不返正文（S2 生成后启用）。"""
-    raise NotImplementedError("S2")
+def _skills_dir() -> str:
+    import os as _os
+    return _os.environ.get("EXPMEM_SKILLS_DIR") or _os.path.join(
+        _os.path.expanduser("~"), ".dsh", "skills")
 
 
-def record_skill_feedback(fb) -> None:
-    raise NotImplementedError("S2")
+def retrieve_skills(query, top_k: int = None, domain: str = None) -> dict:
+    """真身（S2 收尾）：扫 ~/.dsh/skills（EXPMEM_SKILLS_DIR 可覆盖）→ 检索。
+    返回 {"refs","incomplete","dropped_weak","conflict_pairs","total_active",
+    "lines","level","hint"}——lines/level 是 catalog_lines 的注入文本与降级级别，
+    hint 是 refs=∅ 时的「另有 N 条」。"""
+    from .retrieve import catalog_lines, empty_hint, load_catalog as _load
+    from .retrieve import retrieve_skills as _rs
+    result = _rs(query, _load(_skills_dir()), domain=domain, top_k=top_k)
+    lines, level = catalog_lines(result)
+    result["lines"], result["level"] = lines, level
+    result["hint"] = empty_hint(result)
+    return result
+
+
+def record_skill_feedback(fb, shown_ids=()) -> dict:
+    """真身（S2 收尾）：对 ~/.dsh/skills/<name>/SKILL.md 落 ExpeL 台账。
+    A-MEM 三守卫在 feedback.record_feedback 里（shown_ids=本轮展示过的卡名）。
+    只动台账不动正文——不触发 SkillWeaver 清零。返回 {"applied", "reason", "front"}。"""
+    from . import feedback as _fb
+    from .skills import load_skill, save_skill
+    name = ""
+    try:
+        name = (_fb.parse_feedback(fb) or {}).get("name", "")
+    except ValueError as e:
+        return {"applied": False, "reason": "parse_rejected: %s" % e, "front": None}
+    path = os.path.join(_skills_dir(), name, "SKILL.md")
+    if not os.path.exists(path):
+        return {"applied": False, "reason": "card_not_found: %s" % name, "front": None}
+    front, body = load_skill(path)
+    new_front, applied, reason = _fb.record_feedback(front, fb, shown_ids=shown_ids)
+    if applied:
+        save_skill(path, new_front, body)   # 正文原样；save_skill 再过一次正文闸
+    return {"applied": applied, "reason": reason, "front": new_front}

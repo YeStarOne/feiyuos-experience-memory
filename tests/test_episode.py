@@ -131,6 +131,33 @@ class TestOwnerSession(unittest.TestCase):
         actions, episodes, st = build_session(ev, OWNER)
         self.assertEqual(episodes[0]["game_day"], "秋25")
 
+    def test_game_day_short_format_no_english_suffix(self):
+        # cmb-D：49% 的 state 读是短格式「Mountain(42,11) 春16 14:20」——
+        # 旧正则必选英文季后缀，把它们全漏了（天花板 0.9% 是被正则低估的假象）
+        ev = [
+            {"type": "turn/start", "seq": 1, "time": 1000, "data": {"turn": 1}},
+            _call(2, 1005, "c1", "sd state"), _result(3, 1100, "c1"),
+            {"type": "turn/end", "seq": 4, "time": 1200, "data": {"turn": 1}},
+        ]
+        ev[2] = dict(ev[2])
+        ev[2]["data"]["message"]["content"] = [
+            {"type": "text", "text": "Mountain(42,11) 春16 14:20 | 体力88/270"}]
+        actions, episodes, st = build_session(ev, OWNER)
+        self.assertEqual(episodes[0]["game_day"], "春16")
+
+    def test_game_day_multi_day_window_dropped(self):
+        # cmb-D 既定规则：一集窗口出现两个不同游戏日（跨日回合）→ 宁空勿猜
+        ev = [
+            {"type": "turn/start", "seq": 1, "time": 1000, "data": {"turn": 1}},
+            _call(2, 1005, "c1", "sd state; sleep 1; sd state"), _result(3, 1100, "c1"),
+            {"type": "turn/end", "seq": 4, "time": 1200, "data": {"turn": 1}},
+        ]
+        ev[2] = dict(ev[2])
+        ev[2]["data"]["message"]["content"] = [
+            {"type": "text", "text": "Farm(64,15) 春16 06:00\nFarm(64,15) 春17 06:10"}]
+        actions, episodes, st = build_session(ev, OWNER)
+        self.assertEqual(episodes[0]["game_day"], "")
+
     def test_game_day_missing_when_no_date_fields(self):
         ev = [
             {"type": "turn/start", "seq": 1, "time": 1000, "data": {"turn": 1}},
@@ -150,11 +177,13 @@ class TestOwnerSession(unittest.TestCase):
             {"type": "turn/end", "seq": 4, "time": 1200, "data": {"turn": 1}},
         ]
         actions, episodes, st = build_session(ev, OWNER)
-        # verb 扫描先发（段首锚定），锚定 raw 子 shell 兜底后发
+        # P2-10 后 `(` 也是锚点：verb 扫描先发（子 shell 在串里本就靠前），
+        # 且 raw_path 直接取到；锚定 raw 尺按 path 去重不再重复发
         self.assertEqual([(a.verb, a.raw_path) for a in actions],
-                         [("state", ""), ("raw", "/menu_close")])
-        self.assertEqual(actions[1].endpoint, "RAW /menu_close")
-        self.assertEqual(st["sd_raw_actions"], 1)
+                         [("raw", "/menu_close"), ("state", "")])
+        self.assertEqual(actions[0].endpoint, "RAW /menu_close")
+        self.assertEqual(st["sd_verb_actions"], 2)   # 两把尺重叠后归 verb 尺
+        self.assertEqual(st["sd_raw_actions"], 0)    # 「只剩锚定尺抓到」的语义如实归零
 
     def test_orphan_result_tolerated_and_counted(self):
         ev = [

@@ -110,8 +110,9 @@ class TestRetrieve(unittest.TestCase):
                 f.write("---\n%s\n---\n正文" % J.dumps(front, ensure_ascii=False))
         r = retrieve_skills("买 价格 扣钱", load_catalog(d))
         self.assertEqual(len(r["conflict_pairs"]), 1)
-        text = catalog_lines(r)
+        text, level = catalog_lines(r)
         self.assertIn("未确认哪版为准", text)
+        self.assertEqual(level, 1)
 
 
 def _mk_catalog(fronts):
@@ -238,15 +239,53 @@ class TestBudget(unittest.TestCase):
         refs = [{"name": "a-very-long-name", "when": "很长的" * 60, "state": "observed",
                  "version": 3, "confidence": 0.5, "tool_key": "", "contradicts": [],
                  "score": 5}]
-        for budget in (600, 60, 10):
-            tiny = {"refs": refs, "incomplete": False, "dropped_weak": 0,
-                    "conflict_pairs": []}
-            text = catalog_lines(tiny, token_budget=budget)
+        tiny = {"refs": refs, "incomplete": False, "dropped_weak": 0,
+                "conflict_pairs": []}
+        # P2-4：三级降级各自可观测（level 1=完整行 / 2=只留名字 / 3=连名字都放不下）
+        for budget, want_level in ((600, 1), (60, 2), (10, 2), (2, 3)):
+            text, level = catalog_lines(tiny, token_budget=budget)
             self.assertTrue(text.strip())
-            self.assertLessEqual(estimate_tokens(text), max(budget, 20))
+            self.assertEqual(level, want_level, "budget=%d" % budget)
+            if level < 3:
+                self.assertLessEqual(estimate_tokens(text), max(budget, 20))
+        # level 3 是「永不空手」的逃生舱：单行退守，宁超预算不许空手
+        text3, _ = catalog_lines(tiny, token_budget=2)
+        self.assertEqual(len(text3.splitlines()), 1)
 
     def test_estimate_tokens_cjk_heavier(self):
         self.assertGreater(estimate_tokens("一二三四五"), estimate_tokens("abcde"))
+
+
+class TestLedgerGate(unittest.TestCase):
+    """ExpeL 台账对检索的影响：counter≤0 移出书；counter 只进排序不进闸。"""
+
+    FRONT = {"name": "stardew-probe-after-action", "description": "x",
+             "state": "candidate", "tool_key": "stardew.state", "version": 1,
+             "retrieval_anchor": "对账 state 存仓库 收庄稼",
+             "task_query": "写操作后同回合核对结果"}
+
+    def test_counter_le_zero_removed_from_book(self):
+        import tempfile, os, json as J
+        d = tempfile.mkdtemp()
+        for nm, cnt in (("alive", 1), ("removed", 0), ("dead", -2)):
+            os.makedirs(os.path.join(d, nm))
+            front = dict(self.FRONT, name=nm, counter=cnt)
+            with open(os.path.join(d, nm, "SKILL.md"), "w", encoding="utf-8") as f:
+                f.write("---\n%s\n---\n正文" % J.dumps(front, ensure_ascii=False))
+        self.assertEqual([c["name"] for c in load_catalog(d)], ["alive"])
+
+    def test_counter_missing_defaults_baseline(self):
+        cat = load_catalog(SEED)   # 种子卡没有 counter 字段
+        self.assertEqual(len(cat), 1)
+
+    def test_counter_orders_but_never_gates(self):
+        fronts = [
+            dict(self.FRONT, name="thin", counter=1),
+            dict(self.FRONT, name="thick", counter=15),
+        ]
+        r = retrieve_skills("对账 state 存仓库", _mk_catalog(fronts))
+        # 同等证据命中：台账厚的排前面；两者都过闸（counter 不是闸）
+        self.assertEqual([x["name"] for x in r["refs"]], ["thick", "thin"])
 
 
 if __name__ == "__main__":

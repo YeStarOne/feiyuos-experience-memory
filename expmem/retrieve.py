@@ -69,7 +69,10 @@ def _tokens(s: str):
 
 
 def load_catalog(skills_dir: str):
-    """扫 SKILL.md / *.md 的 frontmatter，返回 active 卡列表（deprecated 不进）。"""
+    """扫 SKILL.md / *.md 的 frontmatter，返回 active 卡列表。
+
+    两类不进：deprecated（打脸不删卡但不再召回）；counter≤0（ExpeL REMOVE——
+    台账清零的卡移出书，文件留盘。缺省 counter=基线 1，旧卡不受影响）。"""
     fronts = []
     paths = sorted(glob.glob(os.path.join(skills_dir, "**", "*.md"), recursive=True))
     for p in paths:
@@ -88,6 +91,12 @@ def load_catalog(skills_dir: str):
         except Exception:
             continue  # 坏卡跳过但留给 lint 报（这里不抛，检索不许被一张坏卡打死）
         if front.get("state") not in ACTIVE_STATES:
+            continue
+        try:
+            counter = int(front.get("counter", 1) or 0)
+        except Exception:
+            counter = 1
+        if counter <= 0:
             continue
         front["_path"] = p
         fronts.append(front)
@@ -126,10 +135,17 @@ def _passes(hit: int, matched: set) -> bool:
 
 
 def _rank(hit: int, front: dict) -> float:
-    """排序分（可以吃 confidence/state——它决定先后，不决定进不进目录）。
-    cmb 夹具③：同等命中下 conf 高的排前面，conf=0 的卡照样过闸。"""
+    """排序分（可以吃 confidence/state/counter——它决定先后，不决定进不进目录）。
+    cmb 夹具③：同等命中下 conf 高的排前面，conf=0 的卡照样过闸。
+    ExpeL：counter 降序=注入序——同等证据命中下台账厚的排前面；权重封顶 1.0
+    （counter 20 封顶），证据 hit 永远压过台账。"""
+    try:
+        counter = int(front.get("counter", 1) or 0)
+    except Exception:
+        counter = 1
     return round(hit + _STATE_BONUS.get(front.get("state", "candidate"), 0.0)
-                 + float(front.get("confidence", 0) or 0), 2)
+                 + float(front.get("confidence", 0) or 0)
+                 + 0.05 * min(max(counter, 0), 20), 2)
 
 
 def retrieve_skills(q: str, catalog, domain=None, top_k=None):
@@ -196,12 +212,14 @@ def empty_hint(result) -> str:
     return "另有 %d 条经验技能可用；动手前先 expmem_search 查一次。" % result["total_active"]
 
 
-def catalog_lines(result, token_budget=None) -> str:
-    """两级降级成注入文本（OpenViking 预算循环，最坏有界、永不空手）。"""
+def catalog_lines(result, token_budget=None) -> tuple:
+    """两级降级成注入文本（OpenViking 预算循环，最坏有界、永不空手）。
+    P2-4：返回 (text, level)，level ∈ 1=完整行/2=只留名字/3=单行退守——
+    调用方据此知道 degradation 发生在哪一级，别让「降级」变成静默。"""
     budget = token_budget or LIMITS["catalog_token_budget"]
     refs = result.get("refs") or []
     if not refs:
-        return ""
+        return "", 0
     def level1():
         lines = []
         for r in refs:
@@ -214,7 +232,7 @@ def catalog_lines(result, token_budget=None) -> str:
         return "\n".join(r["name"] for r in refs)
     def level3():
         return "另有 %d 条经验技能可用；动手前先 expmem_search 查一次。" % len(refs)
-    for cand in (level1(), level2(), level3()):
+    for i, cand in enumerate((level1(), level2(), level3()), start=1):
         if estimate_tokens(cand) <= budget:
-            return cand
-    return level3()
+            return cand, i
+    return level3(), 3

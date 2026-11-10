@@ -26,7 +26,10 @@ EPISODE_GAP_S = 600          # cmb-G2：同一回合内相邻动作间隔超过 
 POLL_WINDOW_S = 30           # cmb-G2：轮询重复窗口
 # cmb-G1 实测样式（sd.py cmd_state 146-149 行 + 4 条真实 out_head 核实）：
 # 一行摘要 = `Beach(44,35) 冬25 winter 17:40 | 体力102/270 …` → 中英双语锚定
-GAME_DAY_RE = re.compile(r"([春夏秋冬])(\d+)\s+(?:spring|summer|fall|winter)", re.I)
+# cmb-D（11-11 复核推翻旧天花板）：49% 的 state 读是短格式「Mountain(42,11) 春16 14:20」，
+# 必选英文季后缀把它们全漏了 → 天花板实为 4.6%（12→62）。英文季改可选；多日歧义
+# 按既定规则弃（一集内出现两个不同游戏日=跨日窗口，宁空勿猜）。
+GAME_DAY_RE = re.compile(r"([春夏秋冬])(\d+)")
 SEASON_JSON_RE = re.compile(r'"season"\s*:\s*"(spring|summer|fall|autumn|winter)"', re.I)
 DOM_JSON_RE = re.compile(r'"(?:dayOfMonth|day)"\s*:\s*(\d+)')
 SEASON_CN = {"spring": "春", "summer": "夏", "fall": "秋", "autumn": "秋", "winter": "冬"}
@@ -98,14 +101,22 @@ def _head(txt: str, limit: int = 160) -> str:
 def _game_day(acts) -> str:
     """从本集探针 out_head 抓游戏日，存「冬25」样式（对齐手册 §9 双标）。
 
-    优先双语锚定（一行摘要），JSON season/dayOfMonth 兜底；抓不到如实空着。"""
+    优先一行摘要（短/长格式都吃），JSON season/dayOfMonth 兜底。
+    多日歧义按既定规则弃：一集窗口里出现两个不同游戏日（跨日回合）→
+    宁空勿猜；抓不到也如实空着。"""
+    days = []
     for a in acts:
         h = getattr(a, "out_head", "") or ""
         if not h:
             continue
-        m = GAME_DAY_RE.search(h)
-        if m:
-            return m.group(1) + m.group(2)
+        for m in GAME_DAY_RE.finditer(h):
+            d = m.group(1) + m.group(2)
+            if d not in days:
+                days.append(d)
+    if len(days) == 1:
+        return days[0]
+    if len(days) > 1:
+        return ""          # 跨日窗口：弃（cmb-D 复算口径 62/1337 已把这 14 窗扣除）
     for a in acts:
         h = getattr(a, "out_head", "") or ""
         if not h:

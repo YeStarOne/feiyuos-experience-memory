@@ -8,9 +8,19 @@
   我们这边 json 往返零依赖、零歧义）。
 - 状态机闸门：candidate→observed→verified 只能逐级升；任何态可降 deprecated
   （现实打脸不删卡——Voyager 反证"只记成功"的学不会失败）；同名覆盖后旧卡留盘。
-- 禁止自动 verified：升级必须外部确认（owner/二审），机器只许降不许升。"""
+- 禁止自动 verified：升级必须外部确认（owner/二审），机器只许降不许升。
+
+11-11 S2 收尾（intel 四仓裁定落地）：
+- ExpeL 台账字段：counter（净值，基线 1=「在书里」；≤0 移出书——retrieve 侧不装载）
+  + strong_ok/strong_fail（conf 只吃 strong）+ test_count（升级闸只认 is_tested）。
+- SkillWeaver「改一次验证清零」：正文/语义字段任何变化 → version+1、test_count=0、
+  counter 回基线、状态回 candidate（deprecated 永不复活）。AWM 整份重写不带
+  merge 阈值——rewrite_card 就是唯一写路径，旧的合并二审机制删除。
+- 正文机械闸：卡要泛化——具体坐标/G 数属于 frontmatter evidence（点回
+  actions.jsonl），不许出现在指令正文里。"""
 import json
 import os
+import re
 
 STATES = ("candidate", "observed", "verified", "pending_review", "deprecated")
 
@@ -27,9 +37,95 @@ LEGAL = {
     ("deprecated", "deprecated"),         # 降级后仍可补证据/改指向往，但永不可复活
 }
 
+# ExpeL 台账（feedback.py 维护）：counter 是 (text, counter) 的 counter；
+# 基线 1 = 卡被写进书里这件事本身。负向反馈减、正向加，≤0 = 移出书。
+COUNTER_BASELINE = 1
+
+# SkillWeaver 清零判定里「动了就算改」的语义字段（evidence 的增删也算——
+# 证据变了卡就该重验证，这正是「改一次验证清零」的本意）
+SEMANTIC_FIELDS = ("description", "retrieval_anchor", "task_query", "tool_key",
+                   "evidence", "contradicts", "domain")
+
+# 正文机械闸（cmb 实测分布 11-11：绝对坐标 50.0% / JSON 坐标键 3.0%（segment）/
+# 钱142538 44.2% / 数字+g 0%——g 形态只在她写的正文里可能出现，闸命中率低是常态，
+# 0 命中+无已知拒收夹具才是假绿）。闸只扫正文，**绝不扫 evidence**——证据必须
+# 逐字保留（点回 actions.jsonl），现有卡 evidence 里就有 chestAt 坐标，必须放行。
+BODY_COORD_RE = re.compile(r"[（(]\s*-?\d{1,4}\s*[,，]\s*-?\d{1,4}\s*[）)]")
+BODY_COORD_JSON_RE = re.compile(
+    r"""["']x["']\s*:\s*-?\d+\s*,\s*["']y["']\s*:\s*-?\d+""")
+BODY_MONEY_G_RE = re.compile(r"(?<!\d)\d[\d,]{0,8}\s*g(?![a-zA-Z0-9])")
+BODY_MONEY_CN_RE = re.compile(r"(?:钱|金币|gold)\s*[:：]?\s*\d[\d,]{2,}")
+
+BODY_GATE_HINTS = (
+    ("具体坐标 (x,y)——挪进 frontmatter evidence，正文写规则不写坐标", BODY_COORD_RE),
+    ("JSON 坐标键 (\"x\":767,\"y\":538 形态)——正文写模板占位符，具体值进 evidence",
+     BODY_COORD_JSON_RE),
+    ("具体 G 数——正文写「看钱差对不对」不写具体金额", BODY_MONEY_G_RE),
+    ("具体钱数（钱/gold+数字）——正文写规则不写具体金额", BODY_MONEY_CN_RE),
+)
+
 
 class StateError(ValueError):
     pass
+
+
+def lint_body(body: str) -> None:
+    """正文机械闸：命中即拒。frontmatter evidence 不在闸内（那里就该放具体值），
+    模板生成侧（consolidate）对 cmd 里的坐标/金额做占位符消毒后再进正文。"""
+    hits = [hint for hint, rx in BODY_GATE_HINTS if rx.search(body or "")]
+    if hits:
+        raise StateError("正文机械闸拒绝: " + "; ".join(hits))
+
+
+def sanitize_for_body(s: str) -> str:
+    """evidence/cmd 进正文前的消毒：具体值→占位符（规则保留，数值点回 evidence）。"""
+    s = BODY_COORD_RE.sub("(坐标)", s)
+    s = BODY_COORD_JSON_RE.sub('"x":(坐标),"y":(坐标)', s)
+    s = BODY_MONEY_G_RE.sub("(金额)", s)
+    s = BODY_MONEY_CN_RE.sub("(金额)", s)
+    return s
+
+
+def is_tested(front: dict) -> bool:
+    return int(front.get("test_count", 0) or 0) > 0
+
+
+def normalize_ledger(front: dict) -> dict:
+    """补台账默认字段（旧卡无这些键也能被 feedback/retrieve 处理）。"""
+    front.setdefault("counter", COUNTER_BASELINE)
+    front.setdefault("test_count", 0)
+    front.setdefault("strong_ok", 0)
+    front.setdefault("strong_fail", 0)
+    return front
+
+
+def rewrite_card(old_front: dict, old_body: str,
+                 new_front: dict, new_body: str) -> dict:
+    """AWM 整份重写 + SkillWeaver 清零——唯一写路径（merge 阈值/合并二审已删除）。
+
+    返回重写后的 front。内容（正文或语义字段）没变就不动版本/台账；
+    变了就 version+1、test_count=0、counter 回基线、状态回 candidate
+    （deprecated 永不复活：保持原态）。lint 不过整份拒绝，旧卡原样留盘。"""
+    lint_body(new_body)
+    new_front = normalize_ledger(dict(new_front))
+    changed = (new_body.rstrip() != old_body.rstrip()) or any(
+        old_front.get(k) != new_front.get(k) for k in SEMANTIC_FIELDS)
+    if changed:
+        new_front["version"] = int(old_front.get("version", 1)) + 1
+        new_front["test_count"] = 0
+        new_front["counter"] = COUNTER_BASELINE
+        if old_front.get("state") == "deprecated":
+            new_front["state"] = "deprecated"      # 打脸不删卡，也不许改写复活
+            new_front["superseded_by"] = old_front.get("superseded_by")
+        else:
+            new_front["state"] = "candidate"
+    else:
+        # 内容没变：台账属于这张卡，旧值优先（不许被新 front 的缺省值悄悄清掉）
+        for k in ("test_count", "counter", "strong_ok", "strong_fail"):
+            new_front[k] = old_front.get(k, new_front.get(k, 0) or 0)
+        new_front["state"] = old_front.get("state", "candidate")
+        new_front["version"] = int(old_front.get("version", 1))
+    return new_front
 
 
 def render_skill(front: dict, body: str) -> str:
@@ -56,11 +152,13 @@ def parse_skill(text: str):
 
 
 def load_skill(path: str):
-    return parse_skill(open(path, encoding="utf-8").read())
+    with open(path, encoding="utf-8") as f:
+        return parse_skill(f.read())
 
 
 def save_skill(path: str, front: dict, body: str) -> str:
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    lint_body(body)                       # 写盘前过闸（rewrite_card 也过，双保险）
     text = render_skill(front, body)
     with open(path, "w", encoding="utf-8", newline="\n") as f:
         f.write(text)
@@ -68,7 +166,9 @@ def save_skill(path: str, front: dict, body: str) -> str:
 
 
 def transition(front: dict, new_state: str, actor: str) -> dict:
-    """状态机闸门。机器只许降不许升：升级必须 actor 标明外部确认。"""
+    """状态机闸门。机器只许降不许升：升级必须 actor 标明外部确认。
+    升级闸只认 is_tested（SkillWeaver：任何内容改动都清零验证，
+    「induction only from verified」在本仓的机械等价 = 没被真实执行过的卡爬不了级）。"""
     old = front.get("state", "candidate")
     if new_state not in STATES:
         raise StateError("未知状态: %s" % new_state)
@@ -77,6 +177,9 @@ def transition(front: dict, new_state: str, actor: str) -> dict:
     if new_state in ("observed", "verified") and old != new_state:
         if actor == "machine":
             raise StateError("机器禁止升级（%s→%s 需外部确认）" % (old, new_state))
+        if not is_tested(front):
+            raise StateError("test_count=0（改过就没再被真实执行过），不许升级 %s→%s"
+                             % (old, new_state))
     front = dict(front)
     front["state"] = new_state
     if new_state == "deprecated":

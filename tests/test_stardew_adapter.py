@@ -17,11 +17,16 @@ class TestVerbCalls(unittest.TestCase):
         cmd = "~/qq-workspace/bin/sd.py warp Beach 44 35"
         self.assertEqual([v for v, _ in sd.verb_calls(cmd)], ["warp"])
 
-    def test_subshell_not_verb_anchored(self):
-        # 段首是 x=$(…)，verb 正则不认 —— 但 raw 路径那把尺子必须认
-        cmd = "x=$(sd raw /menu_close); sd warp Beach 44 35"
-        self.assertEqual([v for v, _ in sd.verb_calls(cmd)], ["warp"])
+    def test_subshell_verb_anchored_now(self):
+        # P2-10 反转 11-10 的口径：`(` 也是锚点——(sd state)/$(sd state) 是真调用，
+        # 静默丢=白名单同款损失。raw 路径两把尺重叠是有意的（episode 层按 path 去重）
+        cmd = "x=$(sd raw /menu_close); (sd state); sd warp A 1 2"
+        self.assertEqual([v for v, _ in sd.verb_calls(cmd)], ["raw", "state", "warp"])
         self.assertEqual(sd.raw_paths(cmd), ["/menu_close"])
+
+    def test_shot_endpoint_not_state(self):
+        # P2-10：/shot 是截图端点，此前落进「GET /state」误归一
+        self.assertEqual(sd.endpoint_for("shot"), "GET /shot")
 
     def test_heredoc_excluded(self):
         cmd = "cat > f <<'EOF'\nsd state\nEOF\nsd warp A 1 2"

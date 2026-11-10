@@ -18,7 +18,9 @@ VERBS = frozenset(
 READ_VERBS = frozenset("state inv near shot farm help".split())
 
 SD_RE = re.compile(
-    r"(?:^|[;&|\n])\s*(?:[\w./~-]*/)?sd(?:\.py)?\s+(?:--?[a-z_]+\s+)*([a-z_]+)"
+    # P2-10：锚点加 `(` —— `(sd state)` / `x=$(sd state)` 是真调用，此前被静默丢
+    # （与白名单同类损失）；raw 的路径另有 RAW_RE/RAW_ANCHOR_RE 两把尺，重叠是有意的。
+    r"(?:^|[;&|(\n])\s*(?:[\w./~-]*/)?sd(?:\.py)?\s+(?:--?[a-z_]+\s+)*([a-z_]+)"
 )
 RAW_RE = re.compile(r"(?:[\w./~-]*/)?sd(?:\.py)?\s+raw\s+(\S+)")
 # 锚定的 raw 子 shell 调用：$(sd raw /store …) 或 ; sd raw /x —— 是真动作，要进 actions
@@ -94,6 +96,7 @@ def endpoint_for(verb: str, raw_path: str = "") -> str:
 ENDPOINT_READ = {
     "state": "GET /state", "inv": "GET /state", "near": "GET /state",
     "farm": "GET /farm_report",
+    "shot": "GET /shot",   # P2-10：截图端点不是 /state，此前误归一
 }
 
 
