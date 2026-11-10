@@ -2,7 +2,8 @@
 """retrieve_skills 实现（S2）：词法 + 元数据，第 0 级阶梯（方案 §7-7/7-10/7-11）。
 
 三闸（OpenViking 对齐）：
-  ① 硬阈值——低于不注入，weak hit 宁可不递（Voyager 无阈值的教训）；
+  ① 硬阈值——低于不注入，weak hit 宁可不递（Voyager 无阈值的教训）；且**闸与排序
+     分家**：过闸只吃命中证据（命中数/多字 token），confidence 与 state 只进排序；
   ② 不静默截断——候选超预算走**两级降级**（带 when → 只留名字 → 退单行），
      最坏有界、永不空手；调用方拿 incomplete 标志自行选级；
   ③ 多层命中折一条（按 name 去重保最高分）。
@@ -24,7 +25,7 @@ LIMITS = {
     "max_inject": 3,          # 目录行最多几条
     "when_max_chars": 80,     # 单行 when 截断
     "catalog_token_budget": 600,  # 注入 token 预算（实测调）
-    "score_threshold": 1.0,   # 硬阈值（cmb-P1-3：原 2.0 把 candidate 全拦死）
+    "min_hits": 2,            # 过闸：命中数≥2，或唯一命中是多字 token（闸只吃命中证据）
 }
 ACTIVE_STATES = ("candidate", "observed", "verified", "pending_review")
 _STATE_BONUS = {"verified": 2.0, "observed": 1.0, "candidate": 0.0, "pending_review": 0.0}
@@ -90,47 +91,64 @@ def load_catalog(skills_dir: str):
     return fronts
 
 
-def _score(q_tokens: set, front: dict, domain=None) -> float:
+def _evidence(q_tokens: set, front: dict, domain=None):
+    """闸与排序分家（cmb 验收口径）：本函数只算**命中证据**，不掺 confidence/state。
+
+    返回 (hit, matched)。跨域默认过滤→hit=0（显式点名时由调用方换 domain 参数）。
+    """
+    d = front.get("domain")
+    if domain and d and d != domain:
+        return 0, set()
     hay = " ".join([front.get("retrieval_anchor", ""), front.get("task_query", ""),
                     front.get("name", ""), front.get("tool_key", ""),
                     front.get("description", "")])
-    hit = len(q_tokens & _tokens(hay))
-    if hit == 0:
-        return 0.0
     matched = q_tokens & _tokens(hay)
-    if hit == 1 and len(next(iter(matched))) == 1:
-        # intel-③：唯一命中是一个单字 → 宁可不递（「一」「我」这类功能字
-        # 在任何中文卡里都可能出现，单字命中不构成「相关」的证据）
-        return 0.0
-    score = hit + _STATE_BONUS.get(front.get("state", "candidate"), 0.0)
-    if hit >= 2:
-        # intel：confidence 只在 hit≥2 时计入——hit=1 时 0.55 的 conf 会把
-        # 一个功能字命中的噪声顶过闸（1.0 阈值形同虚设）
-        score += float(front.get("confidence", 0))
-    d = front.get("domain")
-    if domain and d and d != domain:
-        return 0.0  # 跨域默认过滤（显式点名时由调用方换 domain 参数）
-    return round(score, 2)
+    return len(matched), matched
+
+
+def _passes(hit: int, matched: set) -> bool:
+    """过闸判据——只许吃命中证据，confidence 与 state bonus 一律不进（否则零相关卡
+    只要 conf 高就能混进目录行，阈值形同虚设）：
+
+    ① hit≥min_hits：多个词同时打中，噪声概率极低；
+    ② hit==1：唯一命中必须是**多字** token（bigram/英文词有形状）。intel 实测
+       单字命中（「一」「我」）在任何中文卡里都可能出现，不算相关证据。
+    """
+    if hit == 0:
+        return False
+    if hit >= LIMITS["min_hits"]:
+        return True
+    return max(len(t) for t in matched) >= 2
+
+
+def _rank(hit: int, front: dict) -> float:
+    """排序分（可以吃 confidence/state——它决定先后，不决定进不进目录）。
+    cmb 夹具③：同等命中下 conf 高的排前面，conf=0 的卡照样过闸。"""
+    return round(hit + _STATE_BONUS.get(front.get("state", "candidate"), 0.0)
+                 + float(front.get("confidence", 0) or 0), 2)
 
 
 def retrieve_skills(q: str, catalog, domain=None, top_k=None):
     """返回 {"refs": [...], "incomplete": bool, "dropped_weak": int, "conflict_pairs": [...]}。
 
-    refs 已按 name 去重保最高分；deprecated 不进；低于硬阈值不递。"""
+    refs 已按 name 去重保最高分；deprecated 不进；过闸只吃命中证据（见 _passes）。
+    dropped_weak = 有命中但没过闸的卡数（cmb 验收：它必须重新具备鉴别力）。"""
     q_tokens = _tokens(q)
     if not q_tokens:
         return {"refs": [], "incomplete": False, "dropped_weak": 0, "conflict_pairs": []}
-    scored = []
+    scored, dropped_weak = [], 0
     for f in catalog:
-        s = _score(q_tokens, f, domain=domain)
-        if s >= LIMITS["score_threshold"]:
-            scored.append((s, f))
+        hit, matched = _evidence(q_tokens, f, domain=domain)
+        if hit == 0:
+            continue
+        if not _passes(hit, matched):
+            dropped_weak += 1
+            continue
+        scored.append((_rank(hit, f), f, hit))
     scored.sort(key=lambda x: (-x[0], x[1].get("name", "")))
-    dropped_weak = sum(1 for f in catalog if 0 < _score(q_tokens, f, domain=domain)
-                       < LIMITS["score_threshold"])
     # 多层命中折一条（同 name 保最高分——scored 已排序，首个即最高）
     seen, refs = set(), []
-    for s, f in scored:
+    for s, f, hit in scored:
         nm = f.get("name", "")
         if nm in seen:
             continue
@@ -139,7 +157,7 @@ def retrieve_skills(q: str, catalog, domain=None, top_k=None):
             "name": nm, "tool_key": f.get("tool_key", ""), "state": f.get("state", ""),
             "confidence": f.get("confidence", 0), "version": f.get("version", 1),
             "when": (f.get("task_query") or f.get("description") or "")[:LIMITS["when_max_chars"]],
-            "score": s, "contradicts": f.get("contradicts") or [],
+            "score": s, "hits": hit, "contradicts": f.get("contradicts") or [],
         })
     cap = top_k or LIMITS["max_inject"]
     incomplete = len(refs) > cap

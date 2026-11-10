@@ -53,7 +53,8 @@ class TestRetrieve(unittest.TestCase):
     def test_hit_above_threshold(self):
         r = retrieve_skills("存仓库 对账 stored 收庄稼 state", self.cat)
         self.assertEqual(len(r["refs"]), 1)
-        self.assertGreaterEqual(r["refs"][0]["score"], LIMITS["score_threshold"])
+        # 过闸只吃命中证据（cmb 验收：闸与排序分家），排序分不再当闸用
+        self.assertGreaterEqual(r["refs"][0]["hits"], LIMITS["min_hits"])
 
     def test_below_threshold_counted(self):
         # 「咖啡因摄入」零共享字（用脚本核过：连单字召回都打不中）→ 空手不硬递
@@ -110,6 +111,63 @@ class TestRetrieve(unittest.TestCase):
         self.assertEqual(len(r["conflict_pairs"]), 1)
         text = catalog_lines(r)
         self.assertIn("未确认哪版为准", text)
+
+
+def _mk_catalog(fronts):
+    import tempfile, os, json as J
+    d = tempfile.mkdtemp()
+    for front in fronts:
+        os.makedirs(os.path.join(d, front["name"]))
+        with open(os.path.join(d, front["name"], "SKILL.md"), "w", encoding="utf-8") as f:
+            f.write("---\n%s\n---\n正文" % J.dumps(front, ensure_ascii=False))
+    return load_catalog(d)
+
+
+class TestGateRankingSplit(unittest.TestCase):
+    """cmb 验收夹具（11-11）：闸与排序必须分家——过闸只吃命中证据
+    （hit 数/多字 token），confidence 与 state bonus 只许进排序。
+    否则零相关卡只要 conf 高就能混进目录行。"""
+
+    def setUp(self):
+        self.cat = load_catalog(SEED)
+
+    def test_fixture1_highfreq_single_char_query_rejected(self):
+        for q in ("的", "了", "我", "是不是"):
+            self.assertEqual(retrieve_skills(q, self.cat)["refs"], [], q)
+
+    def test_fixture2_real_chinese_query_still_recalls_candidate(self):
+        r = retrieve_skills("怎么把东西存进仓库", self.cat)
+        self.assertEqual([x["name"] for x in r["refs"]], ["stardew-probe-after-action"])
+        self.assertEqual(r["refs"][0]["state"], "candidate")
+
+    def test_fixture3_confidence_ranks_but_never_gates(self):
+        terms = "对账 state 存仓库 收庄稼"
+        fronts = [
+            {"name": "conf-high", "description": "x", "state": "observed", "version": 1,
+             "confidence": 1.0, "tool_key": "a.b",
+             "retrieval_anchor": terms, "task_query": "核对"},
+            {"name": "conf-zero", "description": "x", "state": "observed", "version": 1,
+             "confidence": 0.0, "tool_key": "a.b",
+             "retrieval_anchor": terms, "task_query": "核对"},
+        ]
+        r = retrieve_skills(terms, _mk_catalog(fronts))
+        # 同等命中：conf=0 的照样过闸，只是排在 conf=1 之后
+        self.assertEqual([x["name"] for x in r["refs"]], ["conf-high", "conf-zero"])
+
+    def test_zero_overlap_card_with_max_confidence_never_injected(self):
+        fronts = [{"name": "noise-conf-1", "description": "x", "state": "verified",
+                   "version": 1, "confidence": 1.0, "tool_key": "a.b",
+                   "retrieval_anchor": "钓鱼 矿洞 战斗 下矿", "task_query": "打怪"}]
+        self.assertEqual(retrieve_skills("对账 state 存仓库", _mk_catalog(fronts))["refs"], [])
+
+    def test_dropped_weak_regained_discriminative_power(self):
+        # 单字命中 + conf 0.9 也不许被顶过闸；被丢的计数看得见（此前恒 0 = 无鉴别力）
+        fronts = [{"name": "weak", "description": "x", "state": "candidate", "version": 1,
+                   "confidence": 0.9, "tool_key": "a.b",
+                   "retrieval_anchor": "锄地 浇水 种子", "task_query": "种地"}]
+        r = retrieve_skills("锄", _mk_catalog(fronts))
+        self.assertEqual(r["refs"], [])
+        self.assertEqual(r["dropped_weak"], 1)
 
 
 class TestBudget(unittest.TestCase):
