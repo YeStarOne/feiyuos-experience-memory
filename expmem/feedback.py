@@ -106,9 +106,12 @@ def record_feedback(front: dict, raw, shown_ids=()) -> tuple:
     return apply_feedback(front, fb, shown_ids=shown_ids)
 
 
-def auto_from_episode(front: dict, verdict: str, used: bool = True) -> tuple:
+def auto_from_episode(front: dict, verdict: str, used: bool = False) -> tuple:
     """ACE 对齐（intel 11-11 交付：「成功回合也打 helpful 标，不止失败才反馈」）：
-    卡被引用（skill_refs）且当集 verdict=success → 自动 weak_positive。
+    卡被引用且当集 verdict=success → 自动 weak_positive。
+    used **缺省 False**（intel 复审：缺省往好猜=每个成功回合都记给在册卡；
+    拿不到就当作没用到，与 failure 不自动标同一条纪律）。调用方必须从
+    api 注入 manifest 里取 used（本轮 refs.name ∩ 当集）。
     机器自动标只动台账，不碰 conf/test_count——conf 只吃 strong，strong 必须
     显式反馈带 executed=true。failure 不自动打标：环境性失败不许由机器归罪于卡
     （那要显式反馈的权力）。返回 (front, applied, reason)。"""

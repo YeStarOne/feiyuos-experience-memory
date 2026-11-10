@@ -112,19 +112,21 @@ def _head(txt: str, limit: int = 160) -> str:
     return (flat[:limit] + (" ⟨%s⟩" % digest if digest else ""))[:limit + 240]
 
 
-def _game_day(acts, stats=None) -> str:
+def _game_day(acts, ambig_seen=None, ep_key="") -> str:
     """从本集探针 out_head 抓游戏日，存「冬25」样式（对齐手册 §9 双标）。
 
-    只看 state 类读的动作（cmb 对账口径：state reads only——farm_report 会把
-    每格作物的成熟日连同坐标一起打印，锚定正则也躲不开，首跑实测
-    fill=47/ambig=27 偏离锚 61/14 就是它混进来的），JSON season/dayOfMonth 兜底。
-    多日歧义按既定规则弃：一集窗口里出现两个不同游戏日（跨日回合）→
-    宁空勿猜；stats 可选传入时把弃掉的窗口计数（game_day_ambiguous，
-    cmb 对账锚：fill=61 ∧ discarded=14 才算两边全对上）。"""
+    只看 state 类读的动作（farm/shot 的输出里日期混着别的数字），文本日提取
+    **跳过 out_source=job_output 的迟到文本**（cmb P2：job 文本可能来自窗口外
+    的另一天——她睡过夜之后的迟到 state，宁空勿猜；JSON 摘要兜底不受此限，
+    那是命令自身执行时的结构化状态）。
+    多日歧义按既定规则弃；ambig_seen 是**集合**（cmb 实锤：同一集在 _close 和
+    job 回填各判一次，int 计数会把 13 个歧义集数成 26+——对外只报独立集数）。"""
     days = []
     for a in acts:
         if not _is_state_read(a):
             continue
+        if getattr(a, "out_source", "") == "job_output":
+            continue                      # 迟到文本不进日提取（P2，见 docstring）
         h = getattr(a, "out_head", "") or ""
         if not h:
             continue
@@ -135,9 +137,9 @@ def _game_day(acts, stats=None) -> str:
     if len(days) == 1:
         return days[0]
     if len(days) > 1:
-        if stats is not None:
-            stats["game_day_ambiguous"] = stats.get("game_day_ambiguous", 0) + 1
-        return ""          # 跨日窗口：弃（cmb-D 复算口径把这 14 窗扣除）
+        if ambig_seen is not None:
+            ambig_seen.add(ep_key)        # 独立集数：同集重复判不重复计
+        return ""          # 跨日窗口：弃（cmb 复算口径 14 窗）
     for a in acts:
         h = getattr(a, "out_head", "") or ""
         if not h:
@@ -149,7 +151,8 @@ def _game_day(acts, stats=None) -> str:
     return ""
 
 
-def _apply_job_outputs(actions, episodes, job_bind, bg_calls, job_out, job_settled, stats) -> int:
+def _apply_job_outputs(actions, episodes, job_bind, bg_calls, job_out,
+                       job_settled, stats, ambig_seen) -> int:
     """把 job_output 的终态文本回填到**被后台化**的动作，并重判受影响的剧集。
 
     只回填终态（completed）：running 的文本是半截，killed 的会被她中途打断
@@ -186,7 +189,7 @@ def _apply_job_outputs(actions, episodes, job_bind, bg_calls, job_out, job_settl
         return 0
     for row in episodes:
         acts = [by_id[i] for i in row["actions"] if i in by_id]
-        row["game_day"] = _game_day(acts, stats)  # 回填后能抓到游戏日的就补上
+        row["game_day"] = _game_day(acts, ambig_seen, row.get("episode_id", ""))
         classify_episode(row, acts)            # 探针可用性/成败按真终态重判
     return touched
 
@@ -203,6 +206,7 @@ def build_session(events, session_name: str):
         "job_backgrounded": 0, "job_recovered": 0, "job_pending": 0,
         "job_killed": 0, "digest_added": 0,
     }
+    ambig_seen = set()    # 歧义剧集的独立集合（cmb 实锤：int 计数会被双判翻倍）
     actions, episodes = [], []
     calls = {}            # callId -> {"ts": ...}（配对用）
     pending = {}          # callId -> [Action]（result 回填用）
@@ -230,7 +234,7 @@ def build_session(events, session_name: str):
         row["act_count"] = len(acts)
         row["act_count_poll_free"] = sum(1 for a in acts if not a.poll_repeat)
         row["game"] = any(a.verb for a in acts)
-        row["game_day"] = _game_day(acts, stats)
+        row["game_day"] = _game_day(acts, ambig_seen, row.get("episode_id", ""))
         classify_episode(row, acts)  # S1：verdict/probe_status/failure_class
         episodes.append(row)
         if row["game"]:
@@ -384,6 +388,8 @@ def build_session(events, session_name: str):
             del pending[cid]
     # 采集修定：后台化动作的终态回填 + 受影响剧集重判（回填前不存在「同回合对账」证据）
     stats["job_backgrounded"] = sum(1 for a in actions if a.call_id in bg_calls)
+    stats["game_day_ambiguous"] = len(ambig_seen)
     stats["job_recovered"] = _apply_job_outputs(actions, episodes, job_bind, bg_calls,
-                                                job_out, job_settled, stats)
+                                                job_out, job_settled, stats, ambig_seen)
+    stats["game_day_ambiguous"] = len(ambig_seen)   # 回填重判后再取终值
     return actions, episodes, stats

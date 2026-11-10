@@ -91,7 +91,7 @@ def scan_candidates(episodes, actions, now_game_day=""):
         g = groups.setdefault(key, {
             "name": "stardew-%s-%s" % (fc, _tool_key(a)[len("stardew."):]),
             "tool_key": _tool_key(a), "failure_class": fc, "state": "candidate",
-            "version": 1, "evidence": [], "stats": {"episodes": 0, "game_days": []},
+            "version": 1, "evidence": [], "stats": {"rows": 0, "game_days": []},
         })
         g["evidence"].append({
             "episode": e.get("episode_id"), "action": aid,   # cmb-P2-6：点回 actions.jsonl 的锚
@@ -102,11 +102,11 @@ def scan_candidates(episodes, actions, now_game_day=""):
             "sub_idx": a.get("sub_idx", 0),
             "cmd": cmd[:120], "out": out[:120], "verdict": "failure",
         })
-        g["stats"]["episodes"] += 1
+        g["stats"]["rows"] += 1
         gd = e.get("game_day") or now_game_day
         if gd and gd not in g["stats"]["game_days"]:
             g["stats"]["game_days"].append(gd)
-    specs = sorted(groups.values(), key=lambda g: (-g["stats"]["episodes"], g["name"]))
+    specs = sorted(groups.values(), key=lambda g: (-g["stats"]["rows"], g["name"]))
     return specs, dropped
 
 
@@ -325,7 +325,17 @@ def induct_specs(episodes, actions, existing_fronts=None, now_game_day=""):
     held_thin = 0
     for k, g in sorted(by_key.items()):
         total = len(g["fail"]) + len(g["ok"])
-        if total < MIN_SPEC_EVIDENCE:
+        # intel 复审（11-11）：薄池闸的单位是「发生数」不是「证据行」——同一回合
+        # 重试 3 次 ≠ 三次发生。GMemory 口径=任务数；我们的机械等价=
+        # 证据行 ≥MIN_SPEC_EVIDENCE **且** 至少跨 2 个不同剧集/游戏日。
+        eps_seen, days_seen = set(), set()
+        for r in g["fail"] + g["ok"]:
+            if r.get("episode"):
+                eps_seen.add(r["episode"])
+            if r.get("game_day"):
+                days_seen.add(r["game_day"])
+        if (total < MIN_SPEC_EVIDENCE
+                or (len(eps_seen) < 2 and len(days_seen) < 2)):
             held_thin += total         # GMemory 薄池闸：宁不开卡，不空对空
             continue
         evs, days = [], []
@@ -369,7 +379,8 @@ def induct_specs(episodes, actions, existing_fronts=None, now_game_day=""):
             "retrieval_anchor": _mechanical_anchor(k, evs),
             "task_query": _TASK_QUERY.get(k, "对 %s 的结果负责时先查这张卡" % k),
             "evidence": evs,
-            "stats": {"episodes": total, "failure": n_fail, "success": n_ok,
+            "stats": {"rows": total, "episodes": len(eps_seen), "days": len(days_seen),
+                      "failure": n_fail, "success": n_ok,
                       "game_days": days, "failure_class": dom_fc},
         }
         spec["body"] = template_body(spec)

@@ -175,6 +175,22 @@ class TestInductSpecs(unittest.TestCase):
         self.assertEqual(specs, [])
         self.assertEqual(ops["held_thin"], 1)
 
+    def test_thin_pool_gate_counts_occurrences_not_rows(self):
+        # intel 复审：同一剧集重试 3 次 ≠ 三次发生——行数够但全在一集 → 仍扣
+        eps, acts = self._three_failures()
+        for i in range(3):
+            eps[i] = dict(eps[i], episode_id="ep_same", game_day="冬25")
+        specs, ops, _ = induct_specs(eps, acts)
+        self.assertEqual(specs, [])
+        self.assertEqual(ops["held_thin"], 3)
+
+    def test_stats_rows_is_honest(self):
+        # 字段名不再骗人：rows=证据行数，episodes=去重集数
+        eps, acts = self._three_failures()
+        specs, _, _ = induct_specs(eps, acts)
+        self.assertEqual(specs[0]["stats"]["rows"], 3)      # 3 条失败证据行
+        self.assertEqual(specs[0]["stats"]["episodes"], 3)  # 三个不同剧集
+
     def test_verified_duplicates_become_confirmations(self):
         eps, acts = self._three_failures()
         existing = [{"name": "stardew-store", "state": "verified",

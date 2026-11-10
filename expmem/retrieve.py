@@ -137,15 +137,16 @@ def _passes(hit: int, matched: set) -> bool:
 def _rank(hit: int, front: dict) -> float:
     """排序分（可以吃 confidence/state/counter——它决定先后，不决定进不进目录）。
     cmb 夹具③：同等命中下 conf 高的排前面，conf=0 的卡照样过闸。
-    ExpeL：counter 降序=注入序——同等证据命中下台账厚的排前面；权重封顶 1.0
-    （counter 20 封顶），证据 hit 永远压过台账。"""
+    ExpeL：counter 降序=注入序——同等证据命中下台账厚的排前面。intel 复审：
+    封顶 20（+1.0）=白送一记命中且后续证据压不下去 → 封顶 6（+0.3），
+    证据 hit 永远压过台账。"""
     try:
         counter = int(front.get("counter", 1) or 0)
     except Exception:
         counter = 1
     return round(hit + _STATE_BONUS.get(front.get("state", "candidate"), 0.0)
                  + float(front.get("confidence", 0) or 0)
-                 + 0.05 * min(max(counter, 0), 20), 2)
+                 + 0.05 * min(max(counter, 0), 6), 2)
 
 
 def retrieve_skills(q: str, catalog, domain=None, top_k=None):

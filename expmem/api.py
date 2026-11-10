@@ -137,18 +137,63 @@ def _skills_dir() -> str:
         _os.path.expanduser("~"), ".dsh", "skills")
 
 
-def retrieve_skills(query, top_k: int = None, domain: str = None) -> dict:
+def retrieve_skills(query, top_k: int = None, domain: str = None,
+                    session: str = "", turn: int = 0) -> dict:
     """真身（S2 收尾）：扫 ~/.dsh/skills（EXPMEM_SKILLS_DIR 可覆盖）→ 检索。
     返回 {"refs","incomplete","dropped_weak","conflict_pairs","total_active",
     "lines","level","hint"}——lines/level 是 catalog_lines 的注入文本与降级级别，
-    hint 是 refs=∅ 时的「另有 N 条」。"""
+    hint 是 refs=∅ 时的「另有 N 条」。
+
+    intel 复审（11-11）补的缺件：**本轮注入清单落盘**（~/.dsh/skills/.injected.jsonl，
+    行={ts,session,turn,query,names,scores}）——没有它，A-MEM 守卫①在自动链路上
+    是空的（模型没见过的卡引用会被放行），ACE 自动打标也拿不到 used。"""
+    import time as _time
     from .retrieve import catalog_lines, empty_hint, load_catalog as _load
     from .retrieve import retrieve_skills as _rs
     result = _rs(query, _load(_skills_dir()), domain=domain, top_k=top_k)
     lines, level = catalog_lines(result)
     result["lines"], result["level"] = lines, level
     result["hint"] = empty_hint(result)
+    if result["refs"]:
+        mrow = {"ts": int(_time.time()), "session": session or "",
+                "turn": turn or 0, "query": (query or "")[:120],
+                "names": [r["name"] for r in result["refs"]],
+                "scores": [r["score"] for r in result["refs"]]}
+        try:
+            with open(os.path.join(_skills_dir(), ".injected.jsonl"),
+                      "a", encoding="utf-8") as f:
+                f.write(json.dumps(mrow, ensure_ascii=False,
+                                   sort_keys=True) + "\n")
+        except OSError:
+            pass                      # manifest 失败不挡检索（宿主可能只读）
     return result
+
+
+def injected_names(skills_dir: str = None, session: str = "",
+                   turn: int = None) -> list:
+    """读注入清单：某 (session, turn) 本轮递给她的卡名。session 为空=全部、
+    turn 为 None=不限回合。清单不存在或读不动 → 空列表（fail-safe：当没用到）。"""
+    path = os.path.join(skills_dir or _skills_dir(), ".injected.jsonl")
+    names = []
+    try:
+        with open(path, encoding="utf-8") as f:
+            for ln in f:
+                ln = ln.strip()
+                if not ln:
+                    continue
+                try:
+                    row = json.loads(ln)
+                except Exception:
+                    continue
+                if session and row.get("session") != session:
+                    continue
+                if turn is not None and row.get("turn") != turn:
+                    continue
+                names.extend(row.get("names") or [])
+    except OSError:
+        return []
+    seen = set()
+    return [n for n in names if not (n in seen or seen.add(n))]
 
 
 def record_skill_feedback(fb, shown_ids=()) -> dict:
@@ -170,3 +215,34 @@ def record_skill_feedback(fb, shown_ids=()) -> dict:
     if applied:
         save_skill(path, new_front, body)   # 正文原样；save_skill 再过一次正文闸
     return {"applied": applied, "reason": reason, "front": new_front}
+
+
+def settle_auto_marks(episodes, skills_dir: str = None) -> dict:
+    """ACE 自动打标的唯一接线（intel 复审 #1 的落点）：逐个成功剧集，
+    used = 该 (session, turn) 注入清单里的卡名（api.injected_names）∩ 这张卡存在。
+    verdict=success 且 used=True 才落 weak_positive；其余一律不动。
+    返回 {"marked": {name: n}, "skipped": n}。"""
+    from . import feedback as _fb
+    from .skills import load_skill, save_skill
+    marked, skipped = {}, 0
+    for e in episodes or []:
+        if e.get("verdict") != "success":
+            skipped += 1
+            continue
+        used = injected_names(skills_dir, e.get("session") or "",
+                              e.get("turn") if e.get("turn") is not None else None)
+        if not used:
+            skipped += 1
+            continue
+        for name in used:
+            path = os.path.join(skills_dir or _skills_dir(), name, "SKILL.md")
+            if not os.path.exists(path):
+                skipped += 1
+                continue
+            front, body = load_skill(path)
+            new_front, applied, _ = _fb.auto_from_episode(front, "success",
+                                                          used=True)
+            if applied:
+                save_skill(path, new_front, body)
+                marked[name] = marked.get(name, 0) + 1
+    return {"marked": marked, "skipped": skipped}

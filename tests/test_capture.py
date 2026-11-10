@@ -137,7 +137,10 @@ class TestJobOutputCapture(unittest.TestCase):
         actions, episodes, st = build_session(ev, OWNER)
         self.assertEqual(st["job_recovered"], 1)
         self.assertIn("冬25 winter", actions[0].out_head)
-        self.assertEqual(episodes[0]["game_day"], "冬25")
+        # cmb P2：job_output 的**文本**日不进 game_day 提取（可能来自窗口外的另一
+        # 天，实锤=春16窗口捞到春17早晨的迟到 state）——宁空勿猜；JSON 摘要兜底
+        # 不受限（那是命令自身执行时的结构化状态）
+        self.assertEqual(episodes[0]["game_day"], "")
 
 
 class TestHeadDigest(unittest.TestCase):

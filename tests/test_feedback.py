@@ -127,5 +127,83 @@ class TestAMemGuards(unittest.TestCase):
         self.assertIn("字符串列表", why)
 
 
+class TestAutoMark(unittest.TestCase):
+    """ACE 自动打标接线（intel 复审 #1）：used 缺省 False（缺省往好猜=每个成功
+    回合都记给在册卡）；接线只从注入清单取 used。"""
+
+    def test_default_used_is_false(self):
+        f, ok, why = apply_feedback.__globals__[
+            "auto_from_episode"](dict(FRONT), "success")
+        self.assertFalse(ok)
+        self.assertEqual(why, "not_used")
+        self.assertEqual(f["counter"], 1)      # 原样
+
+    def test_used_true_marks_once(self):
+        from expmem.feedback import auto_from_episode
+        f, ok, _ = auto_from_episode(dict(FRONT), "success", used=True)
+        self.assertTrue(ok)
+        self.assertEqual(f["counter"], 2)
+        self.assertEqual(f["confidence"], 0.55)   # conf 只吃 strong，weak 不碰
+
+
+class TestManifestWiring(unittest.TestCase):
+    """注入清单（intel 复审 #3）：本轮递了什么卡必须落盘——守卫①和自动打标
+    的 used 都从这里取，清单不存在 = fail-safe 空列表。"""
+
+    def test_retrieve_writes_manifest_and_readback(self):
+        import os
+        import tempfile
+        from expmem import api
+        d = tempfile.mkdtemp()
+        os.environ["EXPMEM_SKILLS_DIR"] = d
+        try:
+            import shutil
+            src = os.path.join(os.path.dirname(__file__), "..", "skills",
+                               "stardew-probe-after-action")
+            shutil.copytree(src, os.path.join(d, "stardew-probe-after-action"))
+            r = api.retrieve_skills("怎么把东西存进仓库", session="s1", turn=7)
+            self.assertEqual(len(r["refs"]), 1)
+            self.assertEqual(api.injected_names(d, "s1", 7),
+                             ["stardew-probe-after-action"])
+            self.assertEqual(api.injected_names(d, "other", 7), [])
+        finally:
+            del os.environ["EXPMEM_SKILLS_DIR"]
+
+    def test_settle_auto_marks_only_used_success(self):
+        import os
+        import json as J
+        import tempfile
+        from expmem import api
+        d = tempfile.mkdtemp()
+        os.environ["EXPMEM_SKILLS_DIR"] = d
+        try:
+            import shutil
+            src = os.path.join(os.path.dirname(__file__), "..", "skills",
+                               "stardew-probe-after-action")
+            shutil.copytree(src, os.path.join(d, "stardew-probe-after-action"))
+            # 清单：s1/turn1 递过这张卡
+            with open(os.path.join(d, ".injected.jsonl"), "w",
+                      encoding="utf-8") as f:
+                f.write(J.dumps({"ts": 0, "session": "s1", "turn": 1,
+                                 "names": ["stardew-probe-after-action"]}) + "\n")
+            eps = [
+                {"session": "s1", "turn": 1, "verdict": "success",
+                 "episode_id": "e1"},                     # 命中：打标
+                {"session": "s1", "turn": 2, "verdict": "success",
+                 "episode_id": "e2"},                     # 清单没有 → skip
+                {"session": "s1", "turn": 1, "verdict": "failure",
+                 "episode_id": "e3"},                     # 失败 → skip
+            ]
+            out = api.settle_auto_marks(eps, d)
+            self.assertEqual(out["marked"], {"stardew-probe-after-action": 1})
+            self.assertEqual(out["skipped"], 2)
+            front, _ = __import__("expmem.skills", fromlist=["load_skill"]) \
+                .load_skill(os.path.join(d, "stardew-probe-after-action",
+                                         "SKILL.md"))
+            self.assertEqual(front["counter"], 2)
+        finally:
+            del os.environ["EXPMEM_SKILLS_DIR"]
+
+
 if __name__ == "__main__":
     unittest.main()
