@@ -43,6 +43,7 @@ def replay(root: str, out_dir: str) -> dict:
         "turns_nonautomation": 0, "game_turns": 0,
         "job_backgrounded_total": 0, "job_recovered_total": 0,
         "job_pending_total": 0, "job_killed_total": 0, "digest_added_total": 0,
+        "game_day_ambiguous_total": 0,
         "actions_written": 0, "episodes_written": 0,
         "automation_rows_in_outputs": 0,
     }
@@ -57,7 +58,7 @@ def replay(root: str, out_dir: str) -> dict:
                   "sd_verb_actions", "sd_other_actions", "sd_actions_total",
                   "sd_raw_paths", "sd_raw_actions", "sd_in_automation", "orphan_results",
                   "job_backgrounded", "job_recovered", "job_pending", "job_killed",
-                  "digest_added"):
+                  "digest_added", "game_day_ambiguous"):
             m[_MAP[k]] += st[k]
         if cls == "owner":
             m["turns_nonautomation"] += st["turns"]
@@ -117,6 +118,7 @@ _MAP = {
     "job_pending": "job_pending_total",
     "job_killed": "job_killed_total",
     "digest_added": "digest_added_total",
+    "game_day_ambiguous": "game_day_ambiguous_total",
 }
 
 

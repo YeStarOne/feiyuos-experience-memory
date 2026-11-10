@@ -98,12 +98,13 @@ def _head(txt: str, limit: int = 160) -> str:
     return (flat[:limit] + (" ⟨%s⟩" % digest if digest else ""))[:limit + 240]
 
 
-def _game_day(acts) -> str:
+def _game_day(acts, stats=None) -> str:
     """从本集探针 out_head 抓游戏日，存「冬25」样式（对齐手册 §9 双标）。
 
     优先一行摘要（短/长格式都吃），JSON season/dayOfMonth 兜底。
     多日歧义按既定规则弃：一集窗口里出现两个不同游戏日（跨日回合）→
-    宁空勿猜；抓不到也如实空着。"""
+    宁空勿猜；stats 可选传入时把弃掉的窗口计数（game_day_ambiguous，
+    cmb 对账锚：fill=61 ∧ discarded=14 才算两边全对上）。"""
     days = []
     for a in acts:
         h = getattr(a, "out_head", "") or ""
@@ -116,7 +117,9 @@ def _game_day(acts) -> str:
     if len(days) == 1:
         return days[0]
     if len(days) > 1:
-        return ""          # 跨日窗口：弃（cmb-D 复算口径 62/1337 已把这 14 窗扣除）
+        if stats is not None:
+            stats["game_day_ambiguous"] = stats.get("game_day_ambiguous", 0) + 1
+        return ""          # 跨日窗口：弃（cmb-D 复算口径把这 14 窗扣除）
     for a in acts:
         h = getattr(a, "out_head", "") or ""
         if not h:
@@ -165,7 +168,7 @@ def _apply_job_outputs(actions, episodes, job_bind, bg_calls, job_out, job_settl
         return 0
     for row in episodes:
         acts = [by_id[i] for i in row["actions"] if i in by_id]
-        row["game_day"] = _game_day(acts)      # 回填后能抓到游戏日的就补上
+        row["game_day"] = _game_day(acts, stats)  # 回填后能抓到游戏日的就补上
         classify_episode(row, acts)            # 探针可用性/成败按真终态重判
     return touched
 
@@ -178,6 +181,7 @@ def build_session(events, session_name: str):
         "sd_verb_actions": 0, "sd_other_actions": 0, "sd_actions_total": 0,
         "sd_raw_paths": 0, "sd_raw_actions": 0, "sd_in_automation": 0,
         "turns": 0, "game_turns": 0, "gap_splits": 0, "orphan_results": 0,
+        "game_day_ambiguous": 0,
         "job_backgrounded": 0, "job_recovered": 0, "job_pending": 0,
         "job_killed": 0, "digest_added": 0,
     }
@@ -208,7 +212,7 @@ def build_session(events, session_name: str):
         row["act_count"] = len(acts)
         row["act_count_poll_free"] = sum(1 for a in acts if not a.poll_repeat)
         row["game"] = any(a.verb for a in acts)
-        row["game_day"] = _game_day(acts)
+        row["game_day"] = _game_day(acts, stats)
         classify_episode(row, acts)  # S1：verdict/probe_status/failure_class
         episodes.append(row)
         if row["game"]:
