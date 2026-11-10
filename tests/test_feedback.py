@@ -373,6 +373,12 @@ class TestManifestWiring(unittest.TestCase):
             self.assertEqual(out["marked"],
                              {"stardew-probe-after-action": 1})
             self.assertEqual(out["reasons"], {"complete": 1})
+            # cmb 残留1：全员 interrupted 的组不许混进 unknown——审计上
+            # 「被打断」≠「没判据」（活日志 21 个组）
+            eps_i = [{"session": "s2", "turn": 1, "verdict": "interrupted",
+                      "episode_id": "e3", "actions": []}]
+            out_i = api.settle_auto_marks(eps_i, [], d)
+            self.assertEqual(out_i["reasons"], {"verdict:interrupted": 1})
             front, _ = __import__("expmem.skills", fromlist=["load_skill"]) \
                 .load_skill(os.path.join(d, "stardew-probe-after-action",
                                          "SKILL.md"))

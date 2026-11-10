@@ -278,9 +278,13 @@ def settle_auto_marks(episodes, actions=None, skills_dir: str = None,
     """ACE 自动打标的唯一接线（intel 复审 #1 的落点）：逐个成功回合，
     used = 该 (session, turn) 注入清单里的卡名 ∩ **组内全部集真实执行过的
     tool_key 并集**（intel 复审 B：只按「递过」打标=回声室；cmb-P1：判单
-    单位=回合不是剧集——gap 切分的同键多集先聚合，首集之后的动作才算数）。
+    单位=回合不是剧集——gap 切分的同键多集先聚合，首集之后的动作才算数；
+    并集**含 interrupted 集**——「她执行过这个 tool_key」语义成立，S4 若要
+    排除被打断的动作须在此显式改口径，不许默认）。
     幂等（intel 复审 A）：已结算的 (session, turn) 记进 .settled.jsonl（带
-    v+reason），重放全史也不重复计；v 落后判据版本的行视为未结算。
+    v+reason），重放全史也不重复计；v 落后判据版本的行视为未结算；
+    **消费者口径：同 (session,turn) 多行并存时取 max(v) 那行**（抬版后旧行
+    不删，append-only），外部按行计数会双计（cmb 复审实证 1318→2636）。
     解析不动的 settled 行整条不结（A-MEM 守卫②同款）。
     返回 {"marked": {name: n}, "skipped": n, "already_settled": n,
           "reasons": {"verdict:*"/"no_injected"/"complete": n}}。"""
@@ -356,7 +360,9 @@ def settle_auto_marks(episodes, actions=None, skills_dir: str = None,
             continue
         verdicts = {e.get("verdict") for e in eps}
         gverdict = ("success" if "success" in verdicts
-                    else "failure" if "failure" in verdicts else "unknown")
+                    else "failure" if "failure" in verdicts
+                    else "interrupted" if "interrupted" in verdicts
+                    else "unknown")
         if gverdict != "success":
             skipped += 1
             reasons["verdict:" + gverdict] = \
