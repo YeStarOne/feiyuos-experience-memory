@@ -380,7 +380,8 @@ def build_session(events, session_name: str):
                         part += 1
                         stats["gap_splits"] += 1
                         open_turn = {"seq": open_turn["seq"], "turn": open_turn["turn"],
-                                     "t_from": a.ts, "acts": [], "last": None}
+                                     "t_from": a.ts, "acts": [], "last": None,
+                                     "hint": open_turn.get("hint", "")}
                     actions.append(a)
                     mine.append(a)
                     if open_turn is not None:

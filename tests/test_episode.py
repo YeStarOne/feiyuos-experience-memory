@@ -265,6 +265,32 @@ class TestGoalHint(unittest.TestCase):
         _, episodes, _ = build_session(ev, OWNER)
         self.assertEqual(episodes[0]["goal_hint"], "")
 
+    def test_hint_survives_gap_split(self):
+        # 真链路实崩（16fd0ba 服务器首跑 KeyError 'hint'）：gap 切分重建
+        # open_turn 时把 hint 丢了——切分后的两个分片都要带上
+        import json as J
+        hint_body = ("<user_message qq=\"1792612052\">把东西存进箱子</user_message>")
+        ev = [
+            {"type": "turn/start", "seq": 1, "time": 1000, "data": {"turn": 1}},
+            self._usermsg(2, 1005, hint_body),
+            _call(3, 1010, "c1", "sd state"), _result(4, 1100, "c1"),
+            # 间隔 > EPISODE_GAP_S → 切分
+            {"type": "tool/call", "seq": 5, "time": 1000 + 60 * 60 * 1000,
+             "data": {"turn": 1, "step": 2, "callId": "c2", "name": "bash",
+                      "arguments": J.dumps({"command": "sd inv"})}},
+            {"type": "tool/result", "seq": 6, "time": 1000 + 60 * 60 * 1000 + 100,
+             "data": {"turn": 1, "step": 2,
+                      "message": {"toolCallId": "c2", "isError": False,
+                                  "content": [{"type": "text", "text": "ok"}]}}},
+            {"type": "turn/end", "seq": 7, "time": 1000 + 60 * 60 * 1000 + 200,
+             "data": {"turn": 1}},
+        ]
+        _, episodes, st = build_session(ev, OWNER)
+        self.assertGreater(st["gap_splits"], 0)
+        self.assertTrue(episodes)
+        for e in episodes:
+            self.assertEqual(e["goal_hint"], "把东西存进箱子")
+
 
 class TestOwnershipGate(unittest.TestCase):
     def test_automation_session_writes_nothing(self):
