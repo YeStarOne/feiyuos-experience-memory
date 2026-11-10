@@ -2,7 +2,8 @@
 """retrieve：三闸（硬阈值/不静默截断/去重）、deprecated 不进、domain 过滤、conflictCard、降级阶梯。"""
 import unittest
 
-from expmem.retrieve import LIMITS, catalog_lines, estimate_tokens, load_catalog, retrieve_skills
+from expmem.retrieve import (LIMITS, catalog_lines, empty_hint, estimate_tokens,
+                             load_catalog, retrieve_skills)
 
 SEED = "skills"
 
@@ -54,7 +55,7 @@ class TestRetrieve(unittest.TestCase):
         r = retrieve_skills("存仓库 对账 stored 收庄稼 state", self.cat)
         self.assertEqual(len(r["refs"]), 1)
         # 过闸只吃命中证据（cmb 验收：闸与排序分家），排序分不再当闸用
-        self.assertGreaterEqual(r["refs"][0]["hits"], LIMITS["min_hits"])
+        self.assertGreaterEqual(r["refs"][0]["hits"], 1)
 
     def test_below_threshold_counted(self):
         # 「咖啡因摄入」零共享字（用脚本核过：连单字召回都打不中）→ 空手不硬递
@@ -168,6 +169,68 @@ class TestGateRankingSplit(unittest.TestCase):
         r = retrieve_skills("锄", _mk_catalog(fronts))
         self.assertEqual(r["refs"], [])
         self.assertEqual(r["dropped_weak"], 1)
+
+
+class TestGateRegression(unittest.TestCase):
+    """cmb 复核 59b0110 时实测出来的三个真漏口（真实形态 12 卡 × 12 无关 query，
+    误召回从 3/12 降到 0/12）。单卡语料挡不住漏口——它们本来就不是靠「卡里没有」
+    挡住的，所以这里必须造出卡里**真有的**那些字。"""
+
+    CARDS = [
+        {"name": "sd-probe", "state": "candidate", "tool_key": "stardew.state",
+         "retrieval_anchor": "对账 state 同一回合 下一步 收菜 收成 存仓库",
+         "task_query": "写操作后同一回合核对结果"},
+        {"name": "sd-till", "state": "observed", "tool_key": "stardew.till",
+         "retrieval_anchor": "锄地 浇水 种子 精力 体力",
+         "task_query": "下地前先看体力够不够"},
+        {"name": "mc-skin", "state": "observed", "tool_key": "mc.skin",
+         "retrieval_anchor": "皮肤 换衣服 玩家外观 材质包",
+         "task_query": "换皮肤前先备份材质"},
+        {"name": "mc-craft", "state": "observed", "tool_key": "mc.craft",
+         "retrieval_anchor": "合成 木板 工作台 材料 配方",
+         "task_query": "合成前先数材料"},
+        {"name": "sd-plant", "state": "observed", "tool_key": "stardew.plant",
+         "retrieval_anchor": "种一个 种子 间距 翻地",
+         "task_query": "播种前先算间距"},
+    ]
+
+    def setUp(self):
+        self.cat = _mk_catalog(self.CARDS)
+
+    def test_pure_function_bigram_is_not_evidence(self):
+        # 「是不是」与卡里可能写的「是不是」同形——纯功能字 bigram 不进召回集合
+        self.assertEqual(retrieve_skills("是不是", self.cat)["refs"], [])
+
+    def test_single_char_pile_does_not_pass(self):
+        # 「一下」→ matched 里只有单字（一/下），旧规则 hit=2 就过闸了
+        r = retrieve_skills("一下", self.cat)
+        self.assertEqual(r["refs"], [])
+        self.assertGreater(r["dropped_weak"], 0)   # 有命中但被丢，计数看得见
+
+    def test_three_real_false_positives_now_blocked(self):
+        for q in ("外面是不是要下雨", "能不能休息一会儿", "她怎么还没回话"):
+            self.assertEqual(retrieve_skills(q, self.cat)["refs"], [], q)
+
+    def test_related_queries_still_recall(self):
+        for q, want in (("收菜对账", "sd-probe"),
+                        ("锄地之前看看体力", "sd-till"),
+                        ("合成需要几块木板", "mc-craft")):
+            names = [r["name"] for r in retrieve_skills(q, self.cat)["refs"]]
+            self.assertIn(want, names, "%s → %s" % (q, names))
+
+    def test_known_residual_documented(self):
+        # cmb 记的残余：「一个」里的「个」不是功能字，现行规则仍会过闸。
+        # 不靠加字表解决——S3 卡数上去后换目录 DF（稀有=证据，高频=噪声）。
+        r = retrieve_skills("一个", self.cat)
+        self.assertEqual([x["name"] for x in r["refs"]], ["sd-plant"])
+
+    def test_empty_refs_still_tells_her_the_book_exists(self):
+        r = retrieve_skills("咖啡因摄入", self.cat)
+        self.assertEqual(r["refs"], [])
+        self.assertEqual(r["total_active"], len(self.CARDS))
+        self.assertIn("另有 %d 条" % len(self.CARDS), empty_hint(r))
+        self.assertEqual(empty_hint({"refs": [{"name": "x"}], "total_active": 3}), "")
+        self.assertEqual(empty_hint({"refs": [], "total_active": 0}), "")
 
 
 class TestBudget(unittest.TestCase):

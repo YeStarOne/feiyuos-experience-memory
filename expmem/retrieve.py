@@ -25,7 +25,7 @@ LIMITS = {
     "max_inject": 3,          # 目录行最多几条
     "when_max_chars": 80,     # 单行 when 截断
     "catalog_token_budget": 600,  # 注入 token 预算（实测调）
-    "min_hits": 2,            # 过闸：命中数≥2，或唯一命中是多字 token（闸只吃命中证据）
+    "min_multi_hits": 1,      # 过闸：至少命中几个**多字** token（纯单字堆叠不算证据）
 }
 ACTIVE_STATES = ("candidate", "observed", "verified", "pending_review")
 _STATE_BONUS = {"verified": 2.0, "observed": 1.0, "candidate": 0.0, "pending_review": 0.0}
@@ -59,7 +59,10 @@ def _tokens(s: str):
             if _CJK_RE.search(sub):
                 out.update(ch for ch in sub if ch not in STOPCHARS)  # 单字管召回（功能字除外）
                 if len(sub) >= 2:
-                    out.update(sub[i:i + 2] for i in range(len(sub) - 1))  # bigram 管精度  # bigram 管精度
+                    # bigram 管精度；但**纯功能字 bigram**（不是/是不/了么）不算证据
+                    # ——cmb 实测：卡里写「不是」时 query「是不是」就会命中它
+                    out.update(sub[i:i + 2] for i in range(len(sub) - 1)
+                               if not all(ch in STOPCHARS for ch in sub[i:i + 2]))
             else:
                 out.add(sub)
     return out
@@ -110,15 +113,16 @@ def _passes(hit: int, matched: set) -> bool:
     """过闸判据——只许吃命中证据，confidence 与 state bonus 一律不进（否则零相关卡
     只要 conf 高就能混进目录行，阈值形同虚设）：
 
-    ① hit≥min_hits：多个词同时打中，噪声概率极低；
-    ② hit==1：唯一命中必须是**多字** token（bigram/英文词有形状）。intel 实测
-       单字命中（「一」「我」）在任何中文卡里都可能出现，不算相关证据。
+    ① 必须至少命中一个**多字** token（bigram/英文词有形状）。纯单字堆叠不算证据——
+       cmb 实测「一下」在真卡上 matched=['一','下'] hit=2 就过闸了，而「一下」
+       是她最常说的话；
+    ② hit≥min_hits：多个词同时打中，噪声概率极低；
+    ③ hit==1 时同样要满足①（单字唯一命中，例如「一」「我」，直接不递）。
     """
     if hit == 0:
         return False
-    if hit >= LIMITS["min_hits"]:
-        return True
-    return max(len(t) for t in matched) >= 2
+    # 证据 = 至少一个多字命中（bigram/英文词有形状）；纯单字堆叠一律不算
+    return sum(1 for t in matched if len(t) >= 2) >= LIMITS["min_multi_hits"]
 
 
 def _rank(hit: int, front: dict) -> float:
@@ -132,10 +136,14 @@ def retrieve_skills(q: str, catalog, domain=None, top_k=None):
     """返回 {"refs": [...], "incomplete": bool, "dropped_weak": int, "conflict_pairs": [...]}。
 
     refs 已按 name 去重保最高分；deprecated 不进；过闸只吃命中证据（见 _passes）。
-    dropped_weak = 有命中但没过闸的卡数（cmb 验收：它必须重新具备鉴别力）。"""
+    dropped_weak = 有命中但没过闸的卡数（cmb 验收：它必须重新具备鉴别力）。
+    total_active = 库里 active 卡总数——refs=∅ 时调用方据此发「另有 N 条」提示
+    （少递但不瞒着她，cmb：否则「宁缺毋滥」等价于她永远不知道有这本错题本）。"""
     q_tokens = _tokens(q)
+    total_active = len(catalog)
     if not q_tokens:
-        return {"refs": [], "incomplete": False, "dropped_weak": 0, "conflict_pairs": []}
+        return {"refs": [], "incomplete": False, "dropped_weak": 0,
+                "conflict_pairs": [], "total_active": total_active}
     scored, dropped_weak = [], 0
     for f in catalog:
         hit, matched = _evidence(q_tokens, f, domain=domain)
@@ -174,7 +182,18 @@ def retrieve_skills(q: str, catalog, domain=None, top_k=None):
                 if p not in pairs:
                     pairs.append(p)
     return {"refs": refs, "incomplete": incomplete,
-            "dropped_weak": dropped_weak, "conflict_pairs": pairs}
+            "dropped_weak": dropped_weak, "conflict_pairs": pairs,
+            "total_active": total_active}
+
+
+def empty_hint(result) -> str:
+    """refs=∅ 但库里确实有货时给一句话（少递但不瞒着）；库空则留空。
+
+    调用方拿它当「另有 N 条经验技能可用，动手前先查一次」的落点——Suzu 强制检索
+    的 +105 就靠这句把「不知道有错题本」变回「知道但不硬塞」。"""
+    if result.get("refs") or not result.get("total_active"):
+        return ""
+    return "另有 %d 条经验技能可用；动手前先 expmem_search 查一次。" % result["total_active"]
 
 
 def catalog_lines(result, token_budget=None) -> str:
