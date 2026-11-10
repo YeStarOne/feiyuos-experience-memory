@@ -221,6 +221,28 @@ class TestManifestWiring(unittest.TestCase):
         finally:
             del os.environ["EXPMEM_SKILLS_DIR"]
 
+    def test_settle_missing_card_keeps_turn_unsettled(self):
+        # intel 复审 A：卡缺失 = 该回合不结（下次重试），不许永久作废信用
+        import os
+        import json as J
+        import tempfile
+        from expmem import api
+        d = tempfile.mkdtemp()
+        os.environ["EXPMEM_SKILLS_DIR"] = d
+        try:
+            with open(os.path.join(d, ".injected.jsonl"), "w",
+                      encoding="utf-8") as f:
+                f.write(J.dumps({"ts": 0, "session": "s1", "turn": 1,
+                                 "names": ["ghost-card"]}) + "\n")
+            eps = [{"session": "s1", "turn": 1, "verdict": "success",
+                    "episode_id": "e1", "actions": []}]
+            out = api.settle_auto_marks(eps, [], d)
+            self.assertEqual(out["marked"], {})
+            with open(os.path.join(d, ".settled.jsonl"), encoding="utf-8") as f:
+                self.assertEqual(f.read().strip(), "")   # settled 未写=可重试
+        finally:
+            del os.environ["EXPMEM_SKILLS_DIR"]
+
 
 if __name__ == "__main__":
     unittest.main()

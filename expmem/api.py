@@ -285,11 +285,12 @@ def settle_auto_marks(episodes, actions=None, skills_dir: str = None) -> dict:
             continue
         act_ids = set(e.get("actions") or [])
         used_keys = {keys_by_ep[i] for i in act_ids if i in keys_by_ep}
-        hit = False
-        for name in injected:
-            path = os.path.join(sdir, name, "SKILL.md")
+        complete = True        # intel 复审 A：settled 只在**全部落账后**写——
+        for name in injected:  # 卡缺失/落盘失败 = 该回合不结，下次重试，
+            path = os.path.join(sdir, name, "SKILL.md")   # 不许永久作废信用
             if not os.path.exists(path):
                 skipped += 1
+                complete = False
                 continue
             front, body = load_skill(path)
             card_key = front.get("tool_key") or ""
@@ -297,12 +298,17 @@ def settle_auto_marks(episodes, actions=None, skills_dir: str = None) -> dict:
             new_front, applied, _ = _fb.auto_from_episode(front, "success",
                                                           used=used)
             if applied:
-                save_skill(path, new_front, body)
+                try:
+                    save_skill(path, new_front, body)
+                except OSError:
+                    skipped += 1
+                    complete = False          # 落盘失败：不写 settled，可重试
+                    continue
                 marked[name] = marked.get(name, 0) + 1
-                hit = True
             else:
-                skipped += 1
-        new_settled.append(skey)
+                skipped += 1                  # not_used 等终局判定：算结清
+        if complete:
+            new_settled.append(skey)
     if new_settled:
         try:
             with open(settled_path, "a", encoding="utf-8") as f:
