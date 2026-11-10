@@ -7,6 +7,7 @@ retrieve_skills / record_skill_feedback —— S2/S3 才有真身，这里只留
 import hashlib
 import json
 import os
+import re
 
 from .store import AppendOnly
 from .sources.session_log import session_files, classify, iter_events
@@ -196,6 +197,51 @@ def injected_names(skills_dir: str = None, session: str = "",
     return [n for n in names if not (n in seen or seen.add(n))]
 
 
+CATALOG_BLOCK_RE = re.compile(r"<available_skills>(.*?)</available_skills>",
+                              re.S)
+CATALOG_NAME_RE = re.compile(r"^-\s*`([a-z0-9-]+)`", re.M)
+
+
+def derive_manifest(root: str) -> dict:
+    """从会话日志派生「本轮展示过什么」（cmb-P1 裁定②的落法）。
+
+    生产里 <available_skills> 块由 dsh harness 的 skill 插件全量列举
+    ~/.dsh/skills（`- \\`name\\`: Use when…` 行格式），不是我们 retrieve_skills
+    的注入——所以 shown-set 的唯一真源就是日志里这个块本身，从它读，
+    一行 dsh 源码都不用动。返回 {(session, turn): [names]}。"""
+    from .sources.session_log import classify, iter_events, session_files
+    manifest = {}
+    for name, path in session_files(root):
+        if classify(name) != "owner":
+            continue
+        turn = None
+        for ev in iter_events(path):
+            typ = ev.get("type")
+            da = ev.get("data") or {}
+            if typ == "turn/start":
+                turn = da.get("turn")
+                continue
+            if typ != "user/message":
+                continue
+            text = da.get("text") or ""
+            if not isinstance(text, str):
+                # v4 的 user/message 内容在 content[0].text
+                c = da.get("content")
+                if isinstance(c, list):
+                    text = "".join(x.get("text", "") for x in c
+                                   if isinstance(x, dict))
+            m = CATALOG_BLOCK_RE.search(text)
+            if not m:
+                continue
+            names = CATALOG_NAME_RE.findall(m.group(1))
+            if names:
+                manifest.setdefault((name, turn), [])
+                for n in names:
+                    if n not in manifest[(name, turn)]:
+                        manifest[(name, turn)].append(n)
+    return manifest
+
+
 def record_skill_feedback(fb, shown_ids=()) -> dict:
     """真身（S2 收尾）：对 ~/.dsh/skills/<name>/SKILL.md 落 ExpeL 台账。
     A-MEM 三守卫在 feedback.record_feedback 里（shown_ids=本轮展示过的卡名）。
@@ -217,7 +263,8 @@ def record_skill_feedback(fb, shown_ids=()) -> dict:
     return {"applied": applied, "reason": reason, "front": new_front}
 
 
-def settle_auto_marks(episodes, actions=None, skills_dir: str = None) -> dict:
+def settle_auto_marks(episodes, actions=None, skills_dir: str = None,
+                      extra_manifest=None) -> dict:
     """ACE 自动打标的唯一接线（intel 复审 #1 的落点）：逐个成功剧集，
     used = 该 (session, turn) 注入清单里的卡名 ∩ **本集真实执行过的 tool_key**
     （intel 复审 B：只按「递过」打标=回声室——进过 top-3 就 +1，counter 变成
@@ -263,6 +310,11 @@ def settle_auto_marks(episodes, actions=None, skills_dir: str = None) -> dict:
                     continue
     except OSError:
         pass
+    for skey, names in (extra_manifest or {}).items():
+        cur = manifest.setdefault(skey, [])
+        for n in names:
+            if n not in cur:
+                cur.append(n)
     # 本集动作的 tool_key 集合
     keys_by_ep = {}
     for a in (actions or []):
@@ -309,6 +361,7 @@ def settle_auto_marks(episodes, actions=None, skills_dir: str = None) -> dict:
                 skipped += 1                  # not_used 等终局判定：算结清
         if complete:
             new_settled.append(skey)
+            settled.add(skey)                 # cmb-P2：同回合多集（gap 切分）不许同轮双标
     if new_settled:
         try:
             with open(settled_path, "a", encoding="utf-8") as f:

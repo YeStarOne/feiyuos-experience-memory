@@ -14,6 +14,7 @@
   {
    "cmd": "expmem bench（2026-11-11 全量重放）",
    "episode": "bench-2026-11-11",
+   "source": "bench",
    "out": "probe ok 72/1337=5.4%，工具层 isError 全历史 2/1027——不当场对账，成败基本不可判",
    "verdict": "failure"
   }
@@ -29,7 +30,7 @@
   "date": "2026-11-11",
   "game_day": "冬25"
  },
- "version": 1
+ "version": 2
 }
 ---
 # 动作后当场对账

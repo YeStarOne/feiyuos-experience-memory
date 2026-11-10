@@ -80,8 +80,14 @@ def main(argv=None):
         _print(audit_dirs(args.cards, args.actions, args.episodes))
     elif args.cmd == "settle":
         actions, episodes = _load_replay(args.root, args.out)
+        # cmb-P1②：shown-set 从会话日志的 <available_skills> 块派生——
+        # 生产里那是 harness 全量列举（我们 retrieve 无流量），它是
+        # 「本轮展示过什么」的唯一真源，一行 dsh 源码都不用动
+        from .api import derive_manifest
+        extra = derive_manifest(args.root)
         _print(api.settle_auto_marks(episodes, actions,
-                                     skills_dir=args.skills or api._skills_dir()))
+                                     skills_dir=args.skills or api._skills_dir(),
+                                     extra_manifest=extra))
 
 
 def _load_replay(root, out):

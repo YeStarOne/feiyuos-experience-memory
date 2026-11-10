@@ -186,6 +186,8 @@ class TestManifestWiring(unittest.TestCase):
                       encoding="utf-8") as f:
                 f.write(J.dumps({"ts": 0, "session": "s1", "turn": 1,
                                  "names": ["stardew-probe-after-action"]}) + "\n")
+            # 注意 (session,turn) 粒度：cmb-P2 后同键回合同轮只结一次，
+            # 所以四个夹具各占一个 turn
             eps = [
                 # 命中：清单有 + 本集真的执行了 stardew.state 的动作
                 {"session": "s1", "turn": 1, "verdict": "success",
@@ -194,17 +196,18 @@ class TestManifestWiring(unittest.TestCase):
                 {"session": "s1", "turn": 2, "verdict": "success",
                  "episode_id": "e2", "actions": []},
                 # 失败 → skip
-                {"session": "s1", "turn": 1, "verdict": "failure",
+                {"session": "s1", "turn": 3, "verdict": "failure",
                  "episode_id": "e3", "actions": ["a1"]},
                 # intel-B 回声室夹具：递了但本集零动作（tool_key 对不上）→ 不标
-                {"session": "s1", "turn": 1, "verdict": "success",
+                {"session": "s1", "turn": 4, "verdict": "success",
                  "episode_id": "e4", "actions": []},
             ]
             acts = [{"id": "a1", "verb": "state", "raw_path": "",
                      "segment": "sd state"}]
             out = api.settle_auto_marks(eps, acts, d)
             self.assertEqual(out["marked"], {"stardew-probe-after-action": 1})
-            self.assertEqual(out["skipped"], 3)
+            self.assertEqual(out["skipped"], 3)   # e2 清单缺 / e3 失败 / e4 没用
+            self.assertEqual(out["already_settled"], 0)
             front, _ = __import__("expmem.skills", fromlist=["load_skill"]) \
                 .load_skill(os.path.join(d, "stardew-probe-after-action",
                                          "SKILL.md"))
