@@ -238,8 +238,8 @@ class TestManifestWiring(unittest.TestCase):
                     "episode_id": "e1", "actions": []}]
             out = api.settle_auto_marks(eps, [], d)
             self.assertEqual(out["marked"], {})
-            with open(os.path.join(d, ".settled.jsonl"), encoding="utf-8") as f:
-                self.assertEqual(f.read().strip(), "")   # settled 未写=可重试
+            self.assertFalse(os.path.exists(os.path.join(d, ".settled.jsonl")),
+                             "settled 未写=可重试")
         finally:
             del os.environ["EXPMEM_SKILLS_DIR"]
 
