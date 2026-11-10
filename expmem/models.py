@@ -23,9 +23,14 @@ class Action:
     is_error: bool = False
     latency_ms: int = -1
     cwd: str = ""
-    out_head: str = ""  # 结果文本头 160 字（S1 outcome 的证据来源）
+    out_head: str = ""  # 结果文本头 160 字（S1 outcome 的证据来源）；JSON 另附 ⟨关注键摘要⟩
     out_sha: str = ""   # 结果全文 sha1[:16]（cmb-G3：evidence 链必须能点回，schema 承诺兑现）
     poll_repeat: bool = False  # 同 verb 同参数间隔<30s 的轮询重复（cmb-G2：等待风格，别算进 calls-to-goal）
+    # S3 前采集修定（additive，不破上面任何字段）：后台化 bash 的终态回填
+    out_source: str = ""   # ''=原样 / job_output=由 job_output 终态覆盖
+    job_id: str = ""       # 后台 job id（bash-xxxx）
+    job_status: str = ""   # completed|killed|…（job/settled 或 job_output 尾巴）
+    job_exit: int = None   # 退出码（拿不到为 None，别写成 0）
 
     def row(self) -> dict:
         return asdict(self)

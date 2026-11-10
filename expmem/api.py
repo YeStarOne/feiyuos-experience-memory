@@ -41,6 +41,8 @@ def replay(root: str, out_dir: str) -> dict:
         "sd_raw_paths_total": 0, "sd_raw_actions_total": 0,
         "sd_in_automation": 0, "orphan_results_total": 0,
         "turns_nonautomation": 0, "game_turns": 0,
+        "job_backgrounded_total": 0, "job_recovered_total": 0,
+        "job_pending_total": 0, "job_killed_total": 0, "digest_added_total": 0,
         "actions_written": 0, "episodes_written": 0,
         "automation_rows_in_outputs": 0,
     }
@@ -53,7 +55,9 @@ def replay(root: str, out_dir: str) -> dict:
         actions, episodes, st = build_session(iter_events(path), name)
         for k in ("tool_calls", "bash", "bash_with_sd", "bash_with_sd_verb",
                   "sd_verb_actions", "sd_other_actions", "sd_actions_total",
-                  "sd_raw_paths", "sd_raw_actions", "sd_in_automation", "orphan_results"):
+                  "sd_raw_paths", "sd_raw_actions", "sd_in_automation", "orphan_results",
+                  "job_backgrounded", "job_recovered", "job_pending", "job_killed",
+                  "digest_added"):
             m[_MAP[k]] += st[k]
         if cls == "owner":
             m["turns_nonautomation"] += st["turns"]
@@ -69,6 +73,15 @@ def replay(root: str, out_dir: str) -> dict:
                 1 for a in actions if classify(a.session) != "owner")
     a_store.close()
     e_store.close()
+    if m["sessions_total"] == 0:
+        # 空集不许当通过（11-11 实踩：root 指到 ~/.dsh/sessions，但真实结构还有一层
+        # workspace 目录 → sessions_total=0、metrics 全 0、rc=0，一片假绿）
+        raise ValueError(
+            "replay 没找到任何会话文件：root 应指向 workspace 目录"
+            "（~/.dsh/sessions/<--workspace-->），不是 ~/.dsh/sessions 本身")
+    if m["sessions_owner"] == 0:
+        raise ValueError("replay 找到 %d 个会话但 0 个属于她（owner 前缀不匹配）：%s"
+                         % (m["sessions_total"], root))
     m["actions_written"] = len(a_store)
     m["episodes_written"] = len(e_store)
     # 守门断言落在**写出来的文件**上，不落在内存清单上（内存恒 0 没有鉴别力）
@@ -99,6 +112,11 @@ _MAP = {
     "sd_raw_actions": "sd_raw_actions_total",
     "sd_in_automation": "sd_in_automation",
     "orphan_results": "orphan_results_total",
+    "job_backgrounded": "job_backgrounded_total",
+    "job_recovered": "job_recovered_total",
+    "job_pending": "job_pending_total",
+    "job_killed": "job_killed_total",
+    "digest_added": "digest_added_total",
 }
 
 

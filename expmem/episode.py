@@ -31,9 +31,68 @@ SEASON_JSON_RE = re.compile(r'"season"\s*:\s*"(spring|summer|fall|autumn|winter)
 DOM_JSON_RE = re.compile(r'"(?:dayOfMonth|day)"\s*:\s*(\d+)')
 SEASON_CN = {"spring": "春", "summer": "夏", "fall": "秋", "autumn": "秋", "winter": "冬"}
 
+# S3 前采集修定（cmb 定的天花板杠杆，11-11 实测）：
+#  ① 后台化 >60s 的 bash 结果文本只是通知（`[still running after 60000ms; moved to
+#     background job bash-xxxx]`），真终态要靠之后的 job_output（309 个后台 job 里
+#     300 个被她自己捞回来了）。会话日志里有 job/registered{jobId,toolCall.callId}
+#     → 精确 join，别猜 id。
+#  ② JSON /state 的 time/season 段常被 160 字头截掉（实测 205 条 JSON 读里 5 条
+#     game_day 只在 160 字之后）→ 头之外再附一份「关注键摘要」，格式仍是合法 JSON
+#     片段，现有 SEASON_JSON_RE/DOM_JSON_RE 直接命中。
+BG_NOTICE_RE = re.compile(r"background job (bash-[0-9a-f]+)")
+JOB_TAIL_RE = re.compile(r"\[status:\s*([a-z_]+),\s*exit code:\s*(-?\d+)\]")
+DIGEST_KEYS = ("season", "dayOfMonth", "day", "time", "gold", "money", "energy",
+               "stamina", "ready", "stored", "totalCost", "remainingGold", "charge")
+
 
 def _sha(s: str) -> str:
     return hashlib.sha1(s.encode("utf-8")).hexdigest()[:16]
+
+
+def _digest(txt: str, limit: int = 90) -> str:
+    """把 JSON 结果里我们关心的键压成一段**合法 JSON 片段**（喂给 out_head 尾部）。
+
+    为什么需要：`sd raw /state` 的 season/dayOfMonth/time 常落在 160 字之后，
+    只截头就把游戏日/时间整段丢了（采集层天花板）。返回 ""=不是 JSON 或没关心键。"""
+    obj = None
+    s = (txt or "").strip()
+    if s[:1] not in "{[":
+        return ""      # 散文里出现的花括号不是 JSON 输出（别给散文造假摘要）
+    try:
+        obj = json.loads(s)
+    except Exception:
+        # JSON + 尾巴（job_output 的 `[status: completed, exit code: 0]`）
+        i, j = s.find("{"), s.rfind("}")
+        if 0 <= i < j:
+            try:
+                obj = json.loads(s[i:j + 1])
+            except Exception:
+                obj = None
+    if not isinstance(obj, dict):
+        return ""
+    found = {}
+
+    def walk(o, depth=0):
+        if depth > 4 or not isinstance(o, dict):
+            return
+        for k, v in o.items():
+            if k in DIGEST_KEYS and k not in found and isinstance(v, (int, float, str, bool, list)):
+                found[k] = v
+            elif isinstance(v, dict):
+                walk(v, depth + 1)
+
+    walk(obj)
+    if not found:
+        return ""
+    frag = json.dumps(found, ensure_ascii=False, separators=(",", ":"))
+    return frag if len(frag) <= limit else frag[:limit]
+
+
+def _head(txt: str, limit: int = 160) -> str:
+    """结果文本头（空白折叠 + 截断）+ 关注键摘要。摘要在截断之后拼，永不被截掉。"""
+    flat = _ONE_SPACE.sub(" ", txt or "").strip()
+    digest = _digest(txt)
+    return (flat[:limit] + (" ⟨%s⟩" % digest if digest else ""))[:limit + 240]
 
 
 def _game_day(acts) -> str:
@@ -58,6 +117,48 @@ def _game_day(acts) -> str:
     return ""
 
 
+def _apply_job_outputs(actions, episodes, job_bind, bg_calls, job_out, job_settled, stats) -> int:
+    """把 job_output 的终态文本回填到**被后台化**的动作，并重判受影响的剧集。
+
+    只回填终态（completed）：running 的文本是半截，killed 的会被她中途打断
+    （partial 归 S2 语义层），宁可留着「输出不可用」也别把半截当证据。
+    注意 job_bind 覆盖**所有** bash（每条 bash 都是一个 job），所以只能用
+    bg_calls（结果真的是通知的那些）当分母，否则 job_backgrounded 会等于 bash 总数。
+    返回回填的动作数。"""
+    by_id = {a.id: a for a in actions}
+    touched, killed, pending = 0, 0, 0
+    for a in actions:
+        if a.call_id not in bg_calls:
+            continue
+        jid = job_bind.get(a.call_id, "")
+        a.job_id = jid
+        txt = job_out.get(jid) if jid else None
+        if txt is None:
+            pending += 1                       # 从没被 job_output 捞回来
+            a.job_status = job_settled.get(jid, "") if jid else ""
+            continue
+        m = JOB_TAIL_RE.search(txt)
+        status = m.group(1) if m else (job_settled.get(jid) or "unknown")
+        a.job_status = status
+        a.job_exit = int(m.group(2)) if m else None
+        if status != "completed":
+            killed += 1                        # killed/unknown：不回填
+            continue
+        a.out_head = _head(txt)
+        a.out_sha = hashlib.sha1(txt.encode("utf-8")).hexdigest()[:16]
+        a.out_source = "job_output"
+        touched += 1
+    stats["job_killed"] = killed
+    stats["job_pending"] = pending
+    if not touched:
+        return 0
+    for row in episodes:
+        acts = [by_id[i] for i in row["actions"] if i in by_id]
+        row["game_day"] = _game_day(acts)      # 回填后能抓到游戏日的就补上
+        classify_episode(row, acts)            # 探针可用性/成败按真终态重判
+    return touched
+
+
 def build_session(events, session_name: str):
     """喂一个会话的事件流，返回 (actions, episodes, stats)。"""
     is_owner = classify(session_name) == "owner"
@@ -66,10 +167,17 @@ def build_session(events, session_name: str):
         "sd_verb_actions": 0, "sd_other_actions": 0, "sd_actions_total": 0,
         "sd_raw_paths": 0, "sd_raw_actions": 0, "sd_in_automation": 0,
         "turns": 0, "game_turns": 0, "gap_splits": 0, "orphan_results": 0,
+        "job_backgrounded": 0, "job_recovered": 0, "job_pending": 0,
+        "job_killed": 0, "digest_added": 0,
     }
     actions, episodes = [], []
     calls = {}            # callId -> {"ts": ...}（配对用）
     pending = {}          # callId -> [Action]（result 回填用）
+    job_bind = {}         # callId -> jobId（job/registered 精确 join；通知文本兜底）
+    bg_calls = set()      # 结果文本是「转到后台」通知的 callId（只有这些需要终态回填）
+    job_out = {}          # jobId -> job_output 拿到的终态文本
+    job_settled = {}      # jobId -> job/settled 的 status
+    jo_call = {}          # job_output 的 callId -> jobId
     open_turn = None      # 按文件顺序开合，不按回合号
     part = 0              # gap 切分的分片号
 
@@ -117,6 +225,13 @@ def build_session(events, session_name: str):
                 verdict = "interrupted" if "interrupt" in kind.lower() else "unknown"
                 _close(ts, verdict)
                 open_turn = None
+        elif typ == "job/registered":
+            tc = da.get("toolCall") or {}
+            if da.get("jobId") and tc.get("callId"):
+                job_bind[tc["callId"]] = da["jobId"]
+        elif typ == "job/settled":
+            if da.get("jobId"):
+                job_settled[da["jobId"]] = str(da.get("status") or "")
         elif typ == "tool/call":
             stats["tool_calls"] += 1
             name = da.get("name")
@@ -124,6 +239,8 @@ def build_session(events, session_name: str):
                 args = json.loads(da.get("arguments") or "{}")
             except Exception:
                 args = {}
+            if name == "job_output" and args.get("job_id"):
+                jo_call[da.get("callId")] = args["job_id"]
             sd_info = sd.parse(args) if name == "bash" else {"verbs": [], "raw_paths": []}
             cmd = args.get("command") or ""
             if name == "bash":
@@ -199,23 +316,41 @@ def build_session(events, session_name: str):
                 pending[da.get("callId")] = mine
         elif typ == "tool/result":
             msg = da.get("message") or {}
-            hit = calls.get(msg.get("toolCallId"))
+            cid = msg.get("toolCallId")
+            txt_full = "".join(b.get("text", "") for b in (msg.get("content") or [])
+                               if isinstance(b, dict))
+            if cid in jo_call:
+                # job_output 的返回才是后台命令的真终态（通知文本只是「还在跑」）
+                job_out[jo_call[cid]] = txt_full
+                continue
+            hit = calls.get(cid)
             if hit is None:
                 stats["orphan_results"] += 1   # 压缩/中断后会有孤儿 result，容忍+计数
                 continue
-            mine = pending.get(msg.get("toolCallId"))
+            mine = pending.get(cid)
             if not mine:
                 continue
             err = bool(msg.get("isError"))
             dt = (ev.get("time", 0) - hit["ts"]) if hit["ts"] and ev.get("time") else -1
-            txt = "".join(b.get("text", "") for b in (msg.get("content") or [])
-                          if isinstance(b, dict))
-            head = _ONE_SPACE.sub(" ", txt)[:160]
-            osha = hashlib.sha1(txt.encode("utf-8")).hexdigest()[:16]
+            head = _head(txt_full)
+            if "⟨" in head:
+                stats["digest_added"] += 1
+            osha = hashlib.sha1(txt_full.encode("utf-8")).hexdigest()[:16]
+            m = BG_NOTICE_RE.search(txt_full)
+            if m:
+                job_bind.setdefault(cid, m.group(1))   # 兜底：没有 job/registered 时从通知抓
+                bg_calls.add(cid)
+                # 通知文本不是输出：留着会假装「探针可用」（probe_status=ok 的假绿）。
+                # 终态能不能捞回来由 _apply_job_outputs 决定，捞不回来就如实不可用。
+                head, osha = "", ""
             for a in mine:
                 a.is_error = err
                 a.latency_ms = dt if dt >= 0 else -1
                 a.out_head = head
                 a.out_sha = osha
-            del pending[msg.get("toolCallId")]
+            del pending[cid]
+    # 采集修定：后台化动作的终态回填 + 受影响剧集重判（回填前不存在「同回合对账」证据）
+    stats["job_backgrounded"] = sum(1 for a in actions if a.call_id in bg_calls)
+    stats["job_recovered"] = _apply_job_outputs(actions, episodes, job_bind, bg_calls,
+                                                job_out, job_settled, stats)
     return actions, episodes, stats
