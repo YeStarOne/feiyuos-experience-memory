@@ -19,7 +19,7 @@
   }
  ],
  "name": "stardew-probe-after-action",
- "retrieval_anchor": "星露谷 做完动作 检查 成功没有 对账 存进去没 买到没 收到没 state store buy harvest sell use 之后",
+ "retrieval_anchor": "星露谷 做完动作 检查 成功没有 对账 存仓库 存进去没 买到没 买东西 价格 钱 扣钱 花费 收菜 收成 收庄稼 收到没 包差 钱差 state store buy harvest sell use 之后",
  "source": "owner+host@v1",
  "state": "candidate",
  "superseded_by": null,

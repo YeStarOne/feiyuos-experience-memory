@@ -29,6 +29,10 @@ LIMITS = {
 ACTIVE_STATES = ("candidate", "observed", "verified", "pending_review")
 _STATE_BONUS = {"verified": 2.0, "observed": 1.0, "candidate": 0.0, "pending_review": 0.0}
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
+# intel 实测：阈值 1.0 + 单字召回叠加后，中文功能字单字会让任何卡片过闸
+# （「我今天是不是该收菜了」→ 我/是/不/了 全是噪声却计分）。功能字不进单字召回，
+# bigram 与实词单字照旧。
+STOPCHARS = frozenset("的了吗呢是我你他这那不有在就都也还")
 
 
 def estimate_tokens(s: str) -> int:
@@ -52,9 +56,9 @@ def _tokens(s: str):
             if not sub:
                 continue
             if _CJK_RE.search(sub):
-                out.update(sub)  # 单字管召回（买种子 vs 买东西 只共享一个「买」）
+                out.update(ch for ch in sub if ch not in STOPCHARS)  # 单字管召回（功能字除外）
                 if len(sub) >= 2:
-                    out.update(sub[i:i + 2] for i in range(len(sub) - 1))  # bigram 管精度
+                    out.update(sub[i:i + 2] for i in range(len(sub) - 1))  # bigram 管精度  # bigram 管精度
             else:
                 out.add(sub)
     return out
@@ -93,8 +97,16 @@ def _score(q_tokens: set, front: dict, domain=None) -> float:
     hit = len(q_tokens & _tokens(hay))
     if hit == 0:
         return 0.0
+    matched = q_tokens & _tokens(hay)
+    if hit == 1 and len(next(iter(matched))) == 1:
+        # intel-③：唯一命中是一个单字 → 宁可不递（「一」「我」这类功能字
+        # 在任何中文卡里都可能出现，单字命中不构成「相关」的证据）
+        return 0.0
     score = hit + _STATE_BONUS.get(front.get("state", "candidate"), 0.0)
-    score += float(front.get("confidence", 0))  # ≤1，作微调项
+    if hit >= 2:
+        # intel：confidence 只在 hit≥2 时计入——hit=1 时 0.55 的 conf 会把
+        # 一个功能字命中的噪声顶过闸（1.0 阈值形同虚设）
+        score += float(front.get("confidence", 0))
     d = front.get("domain")
     if domain and d and d != domain:
         return 0.0  # 跨域默认过滤（显式点名时由调用方换 domain 参数）

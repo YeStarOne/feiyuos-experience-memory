@@ -32,10 +32,18 @@ class TestRetrieve(unittest.TestCase):
         r = retrieve_skills("钓鱼 矿洞 战斗", self.cat)  # 种子卡完全不含这些词
         self.assertEqual(len(r["refs"]), 0)
 
-    def test_cjk_recall_single_char(self):
-        # cmb-P0：中文 query 必须能召回——「怎么买东西」与卡片只共享单字「买」
+    def test_cjk_recall_multi_token(self):
+        # cmb-P0：中文 query 能召回——「怎么买东西」与卡共享 买东西/买（anchor 已按
+        # Voyager 纪律补全真实查询词）；intel-③ 单字唯一命中不递
         r = retrieve_skills("怎么买东西", self.cat)
         self.assertEqual(len(r["refs"]), 1)
+
+    def test_single_char_only_hit_not_delivered(self):
+        # intel 实测：功能字/单字唯一命中不许过闸（「一」在任何中文卡里都有；
+        # 「收菜」在 anchor 补全后是真匹配，不再是噪声——见 test_cjk_recall）
+        for q in ("一", "是不是"):
+            r = retrieve_skills(q, self.cat)
+            self.assertEqual(r["refs"], [], q)
 
     def test_compound_token_split(self):
         # cmb-P0②：复合 token 拆层——query 单词能打中 stardew-probe-after-action
