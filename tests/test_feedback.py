@@ -331,6 +331,13 @@ class TestManifestWiring(unittest.TestCase):
             {"type": "user/message", "time": 2,
              "data": {"role": "user", "id": "m1", "source": {"q": "qq"},
                       "content": [{"type": "text", "text": msg}]}},
+            # 翻开=更强的 shown 证据（S3 实录 926）；同回合去重不双记
+            {"type": "tool/call", "time": 3,
+             "data": {"turn": 9, "step": 2, "callId": "c1", "name": "skill",
+                      "arguments": J.dumps({"name": "stardew-store"})}},
+            {"type": "tool/call", "time": 4,
+             "data": {"turn": 9, "step": 3, "callId": "c2", "name": "skill",
+                      "arguments": J.dumps({"name": "stardew-store"})}},
         ]
         with open(os.path.join(sd, "session.v4.jsonl"), "w",
                   encoding="utf-8") as f:

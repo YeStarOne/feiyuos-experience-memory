@@ -207,10 +207,14 @@ CATALOG_NAME_RE = re.compile(r"^-\s*`([a-z0-9-]+)`", re.M)
 def derive_manifest(root: str) -> dict:
     """从会话日志派生「本轮展示过什么」（cmb-P1 裁定②的落法）。
 
-    生产里 <available_skills> 块由 dsh harness 的 skill 插件全量列举
-    ~/.dsh/skills（`- \\`name\\`: Use when…` 行格式），不是我们 retrieve_skills
-    的注入——所以 shown-set 的唯一真源就是日志里这个块本身，从它读，
-    一行 dsh 源码都不用动。返回 {(session, turn): [names]}。"""
+    两个零改动真源（都不动 dsh 源码）：
+    ① <available_skills> 块——harness skill 插件全量列举 ~/.dsh/skills
+      （`- \\`name\\`: Use when…` 行格式），只在回合首条/技能集变化时出现；
+    ② 原生 skill 工具的「翻开」——`tool/call name=skill arguments={"name":X}`
+      是比列举更强的 shown 证据（S3 实录：卡 02:37 部署后只有 turn 925 有
+      目录块，但她 926 翻开 stardew-store——翻开也该进 shown-set，否则
+      used=true 的样本永远等不到）。
+    返回 {(session, turn): [names]}。"""
     from .sources.session_log import classify, iter_events, session_files
     manifest = {}
     for name, path in session_files(root):
@@ -222,6 +226,18 @@ def derive_manifest(root: str) -> dict:
             da = ev.get("data") or {}
             if typ == "turn/start":
                 turn = da.get("turn")
+                continue
+            if typ == "tool/call" and da.get("name") == "skill":
+                open_name = ""
+                try:
+                    open_name = (json.loads(da.get("arguments") or "{}")
+                                 .get("name") or "")
+                except Exception:
+                    open_name = ""
+                if open_name and turn is not None:
+                    manifest.setdefault((name, turn), [])
+                    if open_name not in manifest[(name, turn)]:
+                        manifest[(name, turn)].append(open_name)
                 continue
             if typ != "user/message":
                 continue
