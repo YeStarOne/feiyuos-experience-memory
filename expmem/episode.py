@@ -27,9 +27,12 @@ POLL_WINDOW_S = 30           # cmb-G2：轮询重复窗口
 # cmb-G1 实测样式（sd.py cmd_state 146-149 行 + 4 条真实 out_head 核实）：
 # 一行摘要 = `Beach(44,35) 冬25 winter 17:40 | 体力102/270 …` → 中英双语锚定
 # cmb-D（11-11 复核推翻旧天花板）：49% 的 state 读是短格式「Mountain(42,11) 春16 14:20」，
-# 必选英文季后缀把它们全漏了 → 天花板实为 4.6%（12→62）。英文季改可选；多日歧义
-# 按既定规则弃（一集内出现两个不同游戏日=跨日窗口，宁空勿猜）。
-GAME_DAY_RE = re.compile(r"([春夏秋冬])(\d+)")
+# 必选英文季后缀把它们全漏了 → 天花板实为 4.6%（12→62）。
+# 但无锚宽正则扫全动作文本会吃进非日期数字（首跑实测 fill=47/ambig=27，偏离
+# 对账锚 61/14）——cmb 锚定复算证明 `\(\d+,\d+\) 季N` 天花板不变（62），故落
+# **锚定版**：(x,y) 前缀 + 中文季日；多日歧义按既定规则弃（宁空勿猜）。
+GAME_DAY_RE = re.compile(
+    r"[（(]\s*\d{1,4}\s*,\s*-?\d{1,4}\s*[）)]\s*([春夏秋冬])(\d+)")
 SEASON_JSON_RE = re.compile(r'"season"\s*:\s*"(spring|summer|fall|autumn|winter)"', re.I)
 DOM_JSON_RE = re.compile(r'"(?:dayOfMonth|day)"\s*:\s*(\d+)')
 SEASON_CN = {"spring": "春", "summer": "夏", "fall": "秋", "autumn": "秋", "winter": "冬"}

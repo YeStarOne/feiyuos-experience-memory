@@ -92,6 +92,11 @@ def scan_candidates(episodes, actions, now_game_day=""):
         })
         g["evidence"].append({
             "episode": e.get("episode_id"), "action": aid,   # cmb-P2-6：点回 actions.jsonl 的锚
+            # 11-11 首跑实测：episode/action id 在跨版本 replay 里会重编号
+            # （gap 切分号变化级联），直接 id 锚会全部变孤儿——补稳定三元组
+            # (session, call_id, sub_idx) 做真锚（id 只是快照）。
+            "session": a.get("session") or "", "call_id": a.get("call_id") or "",
+            "sub_idx": a.get("sub_idx", 0),
             "cmd": cmd[:120], "out": out[:120], "verdict": "failure",
         })
         g["stats"]["episodes"] += 1
@@ -152,6 +157,9 @@ def scan_success(episodes, actions):
                     rule = "buy_charged_%d" % _charge(h)
             if rule:
                 rows.append({"episode": e.get("episode_id"), "action": aid,
+                             "session": a.get("session") or "",
+                             "call_id": a.get("call_id") or "",
+                             "sub_idx": a.get("sub_idx", 0),
                              "cmd": a.get("segment") or "", "out": h,
                              "verdict": "success", "rule": rule,
                              "game_day": e.get("game_day") or ""})
@@ -299,6 +307,9 @@ def induct_specs(episodes, actions, existing_fronts=None, now_game_day=""):
         fcs = {}
         for r in g["fail"]:
             evs.append({"episode": r.get("episode"), "action": r.get("action"),
+                        "session": r.get("session") or "",
+                        "call_id": r.get("call_id") or "",
+                        "sub_idx": r.get("sub_idx", 0),
                         "cmd": (r.get("cmd") or "")[:120],
                         "out": (r.get("out") or "")[:120],
                         "verdict": "failure", "failure_class": r["failure_class"]})
@@ -313,6 +324,9 @@ def induct_specs(episodes, actions, existing_fronts=None, now_game_day=""):
                 days.append(gd)
         for r in g["ok"]:
             evs.append({"episode": r["episode"], "action": r["action"],
+                        "session": r.get("session") or "",
+                        "call_id": r.get("call_id") or "",
+                        "sub_idx": r.get("sub_idx", 0),
                         "cmd": r["cmd"][:120], "out": r["out"][:120],
                         "verdict": "success", "rule": r["rule"]})
             n_ok += 1

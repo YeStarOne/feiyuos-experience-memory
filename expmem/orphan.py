@@ -15,29 +15,53 @@ import os
 
 def orphan_report(cards=(), actions=(), episodes=()) -> dict:
     """cards=卡 front 列表（含 evidence）；actions/episodes = 两个 jsonl 的行。
-    返回五类 orphan 列表 + 计数，全部为空 = 三向全绿。"""
+
+    id 锚会随跨版本 replay 重编号（11-11 首跑实锤：gap 切分号级联改了全部
+    episode id）——card evidence 带 (session, call_id, sub_idx) 稳定三元组时，
+    先按 id，miss 再按三元组解析；都失败才算真孤儿。episode id 缺失但动作
+    能解析 = stale_episode_id（良性：重编号，链仍在）；episode id 存在但
+    不含该动作 = cross_episode（真漂移，单独一类）。"""
     act_by_id = {a.get("id"): a for a in (actions or [])}
+    act_by_triple = {}
+    for a in (actions or []):
+        key = (a.get("session"), a.get("call_id"), a.get("sub_idx", 0))
+        if a.get("call_id"):
+            act_by_triple.setdefault(key, a)
     ep_by_id = {e.get("episode_id"): e for e in (episodes or [])}
     ep_ids_of_action = {}
     for e in (episodes or []):
         for aid in e.get("actions") or []:
             ep_ids_of_action.setdefault(aid, []).append(e.get("episode_id"))
 
-    ghost_action, ghost_episode, cross_episode = [], [], []
+    def _resolve_action(ev):
+        aid = ev.get("action")
+        if aid and aid in act_by_id:
+            return act_by_id[aid]
+        key = (ev.get("session"), ev.get("call_id"),
+               ev.get("sub_idx", 0) if ev.get("sub_idx") is not None else 0)
+        if ev.get("call_id"):
+            return act_by_triple.get(key)
+        return None
+
+    ghost_action, ghost_episode, cross_episode, stale_episode = [], [], [], []
     for f in (cards or []):
         name = f.get("name", "?")
         for ev in f.get("evidence") or []:
             aid, eid = ev.get("action"), ev.get("episode")
-            if aid and aid not in act_by_id:
+            a = _resolve_action(ev)
+            if a is None:
                 ghost_action.append({"card": name, "action": aid})
                 continue
-            if eid and eid not in ep_by_id:
-                ghost_episode.append({"card": name, "episode": eid})
-                continue
-            if aid and eid and eid not in ep_ids_of_action.get(aid, []):
-                cross_episode.append({"card": name, "action": aid,
-                                      "episode": eid,
-                                      "in": ep_ids_of_action.get(aid, [])})
+            aid = a.get("id")
+            if eid and eid in ep_by_id:
+                if eid not in ep_ids_of_action.get(aid, []):
+                    cross_episode.append({"card": name, "action": aid,
+                                          "episode": eid,
+                                          "in": ep_ids_of_action.get(aid, [])})
+            elif eid:
+                # episode id 不存在但动作解析成功：跨版本重编号的良性陈旧锚
+                stale_episode.append({"card": name, "episode": eid,
+                                      "resolved_action": aid})
 
     ep_ghost_action = []
     for e in (episodes or []):
@@ -53,15 +77,15 @@ def orphan_report(cards=(), actions=(), episodes=()) -> dict:
         "card_ghost_action": ghost_action,
         "card_ghost_episode": ghost_episode,
         "card_cross_episode": cross_episode,
+        "card_stale_episode_id": stale_episode,
         "episode_ghost_action": ep_ghost_action,
         "action_without_episode": no_episode,
         "counts": {
             "cards": len(list(cards or [])),
             "actions": len(act_by_id),
             "episodes": len(ep_by_id),
-            "orphans_total": (len(ghost_action) + len(ghost_episode)
-                              + len(cross_episode) + len(ep_ghost_action)
-                              + len(no_episode)),
+            "orphans_total": (len(ghost_action) + len(cross_episode)
+                              + len(ep_ghost_action) + len(no_episode)),
         },
     }
 
