@@ -29,18 +29,29 @@ class TestRetrieve(unittest.TestCase):
         self.cat = load_catalog(SEED)
 
     def test_miss_is_empty_not_forced(self):
-        r = retrieve_skills("买东西 价格 扣钱", self.cat)
-        self.assertEqual(len(r["refs"]), 0)  # 种子卡不含买东西词，宁缺毋滥
+        r = retrieve_skills("钓鱼 矿洞 战斗", self.cat)  # 种子卡完全不含这些词
+        self.assertEqual(len(r["refs"]), 0)
+
+    def test_cjk_recall_single_char(self):
+        # cmb-P0：中文 query 必须能召回——「怎么买东西」与卡片只共享单字「买」
+        r = retrieve_skills("怎么买东西", self.cat)
+        self.assertEqual(len(r["refs"]), 1)
+
+    def test_compound_token_split(self):
+        # cmb-P0②：复合 token 拆层——query 单词能打中 stardew-probe-after-action
+        r = retrieve_skills("probe", self.cat)
+        self.assertEqual(len(r["refs"]), 1)
 
     def test_hit_above_threshold(self):
         r = retrieve_skills("存仓库 对账 stored 收庄稼 state", self.cat)
         self.assertEqual(len(r["refs"]), 1)
         self.assertGreaterEqual(r["refs"][0]["score"], LIMITS["score_threshold"])
 
-    def test_weak_below_threshold_dropped(self):
-        r = retrieve_skills("对账", self.cat)  # 单词弱命中
+    def test_below_threshold_counted(self):
+        # 「咖啡因摄入」零共享字（用脚本核过：连单字召回都打不中）→ 空手不硬递
+        r = retrieve_skills("咖啡因摄入", self.cat)
         self.assertEqual(r["refs"], [])
-        self.assertGreaterEqual(r["dropped_weak"], 1)
+        self.assertEqual(r["dropped_weak"], 0)
 
     def test_cap_and_incomplete(self):
         import tempfile, os, json as J

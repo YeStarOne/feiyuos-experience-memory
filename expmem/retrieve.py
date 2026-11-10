@@ -17,22 +17,47 @@
 import glob
 import json
 import os
+import re
 
 # 预算 frozen 常量（方案 §7-11-6），不散落魔法数
 LIMITS = {
     "max_inject": 3,          # 目录行最多几条
     "when_max_chars": 80,     # 单行 when 截断
     "catalog_token_budget": 600,  # 注入 token 预算（实测调）
-    "score_threshold": 2.0,   # 硬阈值：低于不递
+    "score_threshold": 1.0,   # 硬阈值（cmb-P1-3：原 2.0 把 candidate 全拦死）
 }
 ACTIVE_STATES = ("candidate", "observed", "verified", "pending_review")
 _STATE_BONUS = {"verified": 2.0, "observed": 1.0, "candidate": 0.0, "pending_review": 0.0}
+_CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 
 
 def estimate_tokens(s: str) -> int:
-    """粗估：CJK ≈1.5 token/字（cmb 实测口径），ASCII ≈0.3 token/字符。"""
-    cjk = sum(1 for ch in s if "\u4e00" <= ch <= "\u9fff")
-    return int(cjk * 1.5 + (len(s) - cjk) * 0.3) + 1
+    """粗估：CJK/全角 ≈1.5 token/字（cmb 实测口径），ASCII ≈0.3 token/字符。"""
+    wide = sum(1 for ch in s if "\u4e00" <= ch <= "\u9fff"
+               or "\u3000" <= ch <= "\u303f" or "\uff00" <= ch <= "\uffef")
+    return int(wide * 1.5 + (len(s) - wide) * 0.3) + 1
+
+
+def _tokens(s: str):
+    """cmb-P0：空白分词+整 token 相等在中文上零召回（「怎么买种子」整串一个
+    token，与 hay 永不相交，连弱命中都拿不到）。
+
+    修法（Suzu 同款加宽）：复合 token 按 [-_.] 再拆一层；CJK 串出**单字+bigram**
+    （单字管召回，bigram 管精度），英文原样。"""
+    out = set()
+    for t in re.split(r"[\s，,。？！?!；;、（）()]+", (s or "").lower()):
+        if not t:
+            continue
+        for sub in re.split(r"[-_.]+", t):
+            if not sub:
+                continue
+            if _CJK_RE.search(sub):
+                out.update(sub)  # 单字管召回（买种子 vs 买东西 只共享一个「买」）
+                if len(sub) >= 2:
+                    out.update(sub[i:i + 2] for i in range(len(sub) - 1))  # bigram 管精度
+            else:
+                out.add(sub)
+    return out
 
 
 def load_catalog(skills_dir: str):
@@ -59,10 +84,6 @@ def load_catalog(skills_dir: str):
         front["_path"] = p
         fronts.append(front)
     return fronts
-
-
-def _tokens(s: str):
-    return set((s or "").lower().replace("，", " ").replace(",", " ").split())
 
 
 def _score(q_tokens: set, front: dict, domain=None) -> float:

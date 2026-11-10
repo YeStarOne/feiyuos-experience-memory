@@ -82,8 +82,8 @@ def scan_candidates(episodes, actions, now_game_day=""):
             "version": 1, "evidence": [], "stats": {"episodes": 0, "game_days": []},
         })
         g["evidence"].append({
-            "episode": e.get("episode_id"), "cmd": cmd[:120],
-            "out": out[:120], "verdict": "failure",
+            "episode": e.get("episode_id"), "action": aid,   # cmb-P2-6：点回 actions.jsonl 的锚
+            "cmd": cmd[:120], "out": out[:120], "verdict": "failure",
         })
         g["stats"]["episodes"] += 1
         gd = e.get("game_day") or now_game_day

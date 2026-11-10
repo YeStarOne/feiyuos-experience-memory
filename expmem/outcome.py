@@ -21,12 +21,17 @@ import re
 
 BLOCKED_RE = re.compile(
     r"connection\s+(refused|reset)|ECONN|timed?\s*out|超时|curl:\s*\((7|28|56)\)", re.I)
+BLOCKED_HINTS = ("sd", "stardew", "17844", "47844", "47870", "100.98", "60.204",
+                 "curl", "tailnet")
 DEAD_PROBE_RE = re.compile(r"[:=]000\b")     # 字段整片 000（≥2 处才算，1 处可能是巧合）
 STORED_EMPTY_RE = re.compile(r"stored\"?\s*:\s*\[\s*\]")
 HARVEST_ZERO_RE = re.compile(r"(收|harvest|collect)[^\d]{0,12}0|(?<!\d)0\s*(?:件|个|株)", re.I)
 READY_RE = re.compile(r"[\"']?ready[\"']?\s*[:=]\s*(\d+)")
-MONEY_RE = re.compile(r"(\d[\d,]*)\s*g\b")
-CHARGE_JSON_RE = re.compile(r"\"(?:charge|cost|spent)\"\s*:\s*(\d+)")
+# cmb-P1-1：生产实锤——g 后缀 0/510 命中；真实形态=「钱142538」与
+# buy 返回 JSON 的 totalCost/remainingGold
+MONEY_RE = re.compile(r"(?:钱|gold)\s*(\d[\d,]*)|(\d[\d,]*)\s*g\b", re.I)
+BALANCE_JSON_RE = re.compile(r"\"(?:remainingGold|gold)\"\s*:\s*(\d+)", re.I)
+CHARGE_JSON_RE = re.compile(r"\"(?:charge|cost|spent|totalCost)\"\s*:\s*(\d+)", re.I)
 
 PROBE_VERBS = frozenset("state inv near farm".split())
 PROBE_RAW_PREFIX = ("/state", "/farm_report", "/inv", "/animals")
@@ -36,12 +41,20 @@ def is_probe(a) -> bool:
     return a.verb in PROBE_VERBS or a.raw_path.startswith(PROBE_RAW_PREFIX)
 
 
+def _money_val(h: str):
+    m = BALANCE_JSON_RE.search(h)
+    if m:
+        return int(m.group(1))
+    m = MONEY_RE.search(h)
+    return int((m.group(1) or m.group(2)).replace(",", "")) if m else None
+
+
 def _charge(h: str):
     m = CHARGE_JSON_RE.search(h)
     if m:
         return int(m.group(1))
     m = MONEY_RE.search(h)
-    return int(m.group(1).replace(",", "")) if m else None
+    return int((m.group(1) or m.group(2)).replace(",", "")) if m else None
 
 
 def _match(heads, sig_re, keywords):
@@ -68,12 +81,14 @@ def classify_episode(ep: dict, actions) -> dict:
 
     heads = [(a, a.out_head) for a in actions if (getattr(a, "out_head", "") or "").strip()]
 
-    # blocked：连接层失败，任何动作的返回都算数，不需要读探针
-    for a, h in heads:
-        if BLOCKED_RE.search(h):
-            ep.update(verdict="failure", failure_class="blocked",
-                      outcome={"rule": "blocked", "action": a.id, "signal": h[:80]})
-            return ep
+    # blocked：连接层失败（cmb-P2-8：也要归因——对别处 curl 超时不许整集判 blocked）
+    hit, attr = _match(heads, BLOCKED_RE, BLOCKED_HINTS)
+    if hit is not None and attr == "segment":
+        ep.update(verdict="failure", failure_class="blocked",
+                  outcome={"rule": "blocked", "action": hit.id,
+                           "attribution": "segment",
+                           "signal": (hit.out_head or "")[:80]})
+        return ep
 
     probes = [(a, h) for a, h in heads if is_probe(a)]
     if not probes:
@@ -89,22 +104,24 @@ def classify_episode(ep: dict, actions) -> dict:
         return ep
     ep["probe_status"] = "ok"
 
-    # wrong_arg：/buy 双倍扣钱（证据齐全才判）
+    # wrong_arg：/buy 双倍扣钱（证据齐全才判；cmb-P2-9 取最近邻前后钱差，防中途卖钱压低）
     money = []
     for a, h in probes:
-        m = MONEY_RE.search(h)
-        if m:
-            money.append((a.ts, int(m.group(1).replace(",", ""))))
+        v = _money_val(h)
+        if v is not None:
+            money.append((a.ts, v))
     for a, h in heads:
         if a.verb != "buy" and a.raw_path != "/buy":
             continue
         charge = _charge(h)
         if charge is None:
             continue
-        before = [v for t, v in money if t < a.ts]
-        after = [v for t, v in money if t > a.ts]
+        before = [(t, v) for t, v in money if t < a.ts]
+        after = [(t, v) for t, v in money if t > a.ts]
         if before and after:
-            delta = max(before) - min(after)
+            m0 = max(before, key=lambda x: x[0])[1]   # 最近一次「买之前」
+            m1 = min(after, key=lambda x: x[0])[1]    # 最近一次「买之后」
+            delta = m0 - m1
             if delta >= 1.8 * charge > 0:
                 ep.update(verdict="failure", failure_class="wrong_arg",
                           outcome={"rule": "buy_double_charge", "action": a.id,

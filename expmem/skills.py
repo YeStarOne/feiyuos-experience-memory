@@ -12,14 +12,19 @@
 import json
 import os
 
-STATES = ("candidate", "observed", "verified", "deprecated")
+STATES = ("candidate", "observed", "verified", "pending_review", "deprecated")
 
-# 允许的状态迁移：升级逐级 + 全域可降 deprecated + 原态更新证据
+# 允许的状态迁移（cmb-P1-2：pending_review 是 conflict 卡的落点，retrieve 侧
+# ACTIVE_STATES 早就有它）——升级逐级 + 全域可降 + pending 可撤回/降废。
 LEGAL = {
-    ("candidate", "candidate"), ("candidate", "observed"), ("candidate", "deprecated"),
-    ("observed", "observed"), ("observed", "verified"), ("observed", "deprecated"),
+    ("candidate", "candidate"), ("candidate", "observed"),
+    ("candidate", "pending_review"), ("candidate", "deprecated"),
+    ("observed", "observed"), ("observed", "verified"),
+    ("observed", "pending_review"), ("observed", "deprecated"),
     ("verified", "verified"), ("verified", "deprecated"),
-    ("deprecated", "deprecated"),   # 降级后仍可补证据/改指向往，但永不可复活
+    ("pending_review", "pending_review"), ("pending_review", "candidate"),
+    ("pending_review", "deprecated"),     # 二审撤回/降废；pending 永不可直接升
+    ("deprecated", "deprecated"),         # 降级后仍可补证据/改指向往，但永不可复活
 }
 
 

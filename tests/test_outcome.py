@@ -11,10 +11,11 @@ from expmem.models import Action
 from expmem.outcome import classify_episode
 
 
-def act(aid, verb="", raw_path="", ts=1000, out=""):
+def act(aid, verb="", raw_path="", ts=1000, out="", segment=""):
     return Action(id=aid, ts=ts, session="s", turn=1, step=1, tool="bash",
                   adapter="stardew_sd", call_id="c_" + aid, sub_idx=0,
-                  verb=verb, raw_path=raw_path, out_head=out)
+                  verb=verb, raw_path=raw_path, segment=segment or (raw_path or verb),
+                  out_head=out)
 
 
 class TestNoop(unittest.TestCase):
@@ -56,9 +57,18 @@ class TestNoop(unittest.TestCase):
 class TestBlocked(unittest.TestCase):
     def test_connection_refused(self):
         ep = {"verdict": "unknown"}
-        classify_episode(ep, [act("a1", verb="warp", out="curl: (7) Connection refused")])
+        classify_episode(ep, [act("a1", verb="warp", segment="sd warp Beach 44 35",
+                                  out="curl: (7) Connection refused")])
         self.assertEqual(ep["verdict"], "failure")
         self.assertEqual(ep["failure_class"], "blocked")
+        self.assertEqual(ep["outcome"]["attribution"], "segment")
+
+    def test_unrelated_curl_not_blocked(self):
+        # cmb-P2-8：对别处的 curl 超时不许整集判 blocked（segment 无桥线索→fallback→跳过）
+        ep = {"verdict": "unknown"}
+        classify_episode(ep, [act("a1", verb="warp", segment="wget http://example.com",
+                                  out="timed out")])
+        self.assertEqual(ep["verdict"], "unknown")
 
     def test_money_with_thousands_separator_not_blocked(self):
         # "100,000 g" 里的 000 不许触发 blocked（旧版裸 000 规则的教训）
@@ -69,30 +79,50 @@ class TestBlocked(unittest.TestCase):
 
 
 class TestWrongArg(unittest.TestCase):
-    def test_buy_double_charge(self):
+    def test_buy_double_charge_real_format(self):
+        # cmb-P1-1：真实格式——「钱142538」与 buy 返回 {"totalCost":...}
         ep = {"verdict": "unknown"}
         classify_episode(ep, [
-            act("p0", verb="state", ts=1000, out="钱 1,000 g"),
-            act("b1", raw_path="/buy", ts=2000, out='{"charge":300,"ok":true}'),
-            act("p1", verb="state", ts=3000, out="钱 400 g")])
+            act("p0", verb="state", ts=1000, out="Beach(44,35) 冬25 | 钱1000"),
+            act("b1", raw_path="/buy", ts=2000, out='{"totalCost":300,"ok":true}'),
+            act("p1", verb="state", ts=3000, out="钱400")])
         self.assertEqual(ep["verdict"], "failure")
         self.assertEqual(ep["failure_class"], "wrong_arg")
         self.assertEqual(ep["outcome"]["rule"], "buy_double_charge")
         self.assertEqual(ep["outcome"]["delta"], 600)
         self.assertEqual(ep["outcome"]["charge"], 300)
 
-    def test_buy_correct_charge_not_failure(self):
+    def test_buy_double_charge_legacy_g_format(self):
         ep = {"verdict": "unknown"}
         classify_episode(ep, [
             act("p0", verb="state", ts=1000, out="钱 1,000 g"),
-            act("b1", raw_path="/buy", ts=2000, out='{"charge":300}'),
-            act("p1", verb="state", ts=3000, out="钱 700 g")])
+            act("b1", raw_path="/buy", ts=2000, out='{"charge":300,"ok":true}'),
+            act("p1", verb="state", ts=3000, out="钱 400 g")])
+        self.assertEqual(ep["failure_class"], "wrong_arg")
+        self.assertEqual(ep["outcome"]["delta"], 600)
+
+    def test_buy_with_midway_sale_not_double_charge(self):
+        # cmb-P2-9：最近邻前后，中途卖钱不许压低 after 误报双扣
+        ep = {"verdict": "unknown"}
+        classify_episode(ep, [
+            act("p0", verb="state", ts=1000, out="钱1000"),
+            act("b1", raw_path="/buy", ts=2000, out='{"totalCost":300}'),
+            act("p2", verb="state", ts=2500, out="钱500"),    # 卖货后
+            act("p3", verb="state", ts=3000, out="钱800")])   # 最近邻 after=800
+        self.assertEqual(ep["verdict"], "unknown")
+
+    def test_buy_correct_charge_not_failure(self):
+        ep = {"verdict": "unknown"}
+        classify_episode(ep, [
+            act("p0", verb="state", ts=1000, out="钱1000"),
+            act("b1", raw_path="/buy", ts=2000, out='{"totalCost":300}'),
+            act("p1", verb="state", ts=3000, out="钱700")])
         self.assertEqual(ep["verdict"], "unknown")
 
     def test_buy_missing_evidence_stays_unknown(self):
         # 缺钱差证据就放弃——宁 unknown 不错判
         ep = {"verdict": "unknown"}
-        classify_episode(ep, [act("b1", raw_path="/buy", out='{"charge":300}')])
+        classify_episode(ep, [act("b1", raw_path="/buy", out='{"totalCost":300}')])
         self.assertEqual(ep["verdict"], "unknown")
 
 

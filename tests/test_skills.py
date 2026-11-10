@@ -52,6 +52,18 @@ class TestStateMachine(unittest.TestCase):
         with self.assertRaises(StateError):
             transition(dict(FRONT), "observed", actor="machine")
 
+    def test_pending_review_lifecycle(self):
+        # cmb-P1-2：conflict 卡落 pending_review——机器可打（不是升级），二审撤回/降废
+        f = transition(dict(FRONT), "pending_review", actor="machine")
+        self.assertEqual(f["state"], "pending_review")
+        f = transition(f, "candidate", actor="owner")   # 二审撤回
+        self.assertEqual(f["state"], "candidate")
+        f = transition(dict(FRONT), "pending_review", actor="machine")
+        with self.assertRaises(StateError):
+            transition(f, "observed", actor="owner")     # pending 不可直升
+        with self.assertRaises(StateError):
+            transition(f, "verified", actor="owner")
+
     def test_skip_level_rejected(self):
         with self.assertRaises(StateError):
             transition(dict(FRONT), "verified", actor="owner")
