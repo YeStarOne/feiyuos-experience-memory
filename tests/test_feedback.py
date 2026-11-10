@@ -9,6 +9,7 @@ FRONT = {"name": "stardew-probe-after-action", "state": "candidate",
          "counter": 1, "test_count": 0, "strong_ok": 0, "strong_fail": 0,
          "confidence": 0.55, "contradicts": ["buy-blind"], "tags": ["对账"]}
 SHOWN = ("stardew-probe-after-action",)
+NL = chr(10)   # 夹具里 jsonl 行尾（避免源码里转义折行）
 
 
 class TestLedger(unittest.TestCase):
@@ -224,8 +225,9 @@ class TestManifestWiring(unittest.TestCase):
         finally:
             del os.environ["EXPMEM_SKILLS_DIR"]
 
-    def test_settle_missing_card_keeps_turn_unsettled(self):
-        # intel 复审 A：卡缺失 = 该回合不结（下次重试），不许永久作废信用
+    def test_harness_names_do_not_block_settling(self):
+        # cmb-P1：manifest 里的 harness 名（无目录）必须被忽略——否则 settled
+        # 永远写不进去，我们的卡每次 settle 被重标一遍（counter 线性灌水）
         import os
         import json as J
         import tempfile
@@ -233,10 +235,72 @@ class TestManifestWiring(unittest.TestCase):
         d = tempfile.mkdtemp()
         os.environ["EXPMEM_SKILLS_DIR"] = d
         try:
+            import shutil
+            src = os.path.join(os.path.dirname(__file__), "..", "skills",
+                               "stardew-probe-after-action")
+            shutil.copytree(src, os.path.join(d, "stardew-probe-after-action"))
             with open(os.path.join(d, ".injected.jsonl"), "w",
                       encoding="utf-8") as f:
                 f.write(J.dumps({"ts": 0, "session": "s1", "turn": 1,
-                                 "names": ["ghost-card"]}) + "\n")
+                                 "names": ["agent-experience",
+                                           "cordis-plugin-development",
+                                           "stardew-probe-after-action"]}) + NL)
+            eps = [{"session": "s1", "turn": 1, "verdict": "success",
+                    "episode_id": "e1", "actions": ["a1"]}]
+            acts = [{"id": "a1", "verb": "state", "raw_path": "",
+                     "segment": "sd state"}]
+            out = api.settle_auto_marks(eps, acts, d)
+            self.assertEqual(out["marked"], {"stardew-probe-after-action": 1})
+            self.assertTrue(os.path.exists(os.path.join(d, ".settled.jsonl")))
+            out2 = api.settle_auto_marks(eps, acts, d)   # 幂等不破
+            self.assertEqual(out2["marked"], {})
+            self.assertGreaterEqual(out2["already_settled"], 1)
+        finally:
+            del os.environ["EXPMEM_SKILLS_DIR"]
+
+    def test_duplicate_manifest_rows_do_not_double_mark(self):
+        # cmb-P3a：同 (session,turn) 多行 retrieve 合并去重，一张卡单轮只标一次
+        import os
+        import json as J
+        import tempfile
+        from expmem import api
+        d = tempfile.mkdtemp()
+        os.environ["EXPMEM_SKILLS_DIR"] = d
+        try:
+            import shutil
+            src = os.path.join(os.path.dirname(__file__), "..", "skills",
+                               "stardew-probe-after-action")
+            shutil.copytree(src, os.path.join(d, "stardew-probe-after-action"))
+            with open(os.path.join(d, ".injected.jsonl"), "w",
+                      encoding="utf-8") as f:
+                for _ in range(3):
+                    f.write(J.dumps({"ts": 0, "session": "s1", "turn": 1,
+                                     "names": [
+                                         "stardew-probe-after-action"]}) + NL)
+            eps = [{"session": "s1", "turn": 1, "verdict": "success",
+                    "episode_id": "e1", "actions": ["a1"]}]
+            acts = [{"id": "a1", "verb": "state", "raw_path": "",
+                     "segment": "sd state"}]
+            out = api.settle_auto_marks(eps, acts, d)
+            self.assertEqual(out["marked"], {"stardew-probe-after-action": 1})
+        finally:
+            del os.environ["EXPMEM_SKILLS_DIR"]
+
+    def test_settle_missing_card_keeps_turn_unsettled(self):
+        # intel 复审 A：目录在而 SKILL.md 缺（真损）= 该回合不结（下次重试）。
+        # 无目录的名字是 harness 噪声，另一条夹具（忽略并结清）。
+        import os
+        import json as J
+        import tempfile
+        from expmem import api
+        d = tempfile.mkdtemp()
+        os.environ["EXPMEM_SKILLS_DIR"] = d
+        try:
+            os.makedirs(os.path.join(d, "broken-card"))    # 目录在，卡不在
+            with open(os.path.join(d, ".injected.jsonl"), "w",
+                      encoding="utf-8") as f:
+                f.write(J.dumps({"ts": 0, "session": "s1", "turn": 1,
+                                 "names": ["broken-card"]}) + "\n")
             eps = [{"session": "s1", "turn": 1, "verdict": "success",
                     "episode_id": "e1", "actions": []}]
             out = api.settle_auto_marks(eps, [], d)

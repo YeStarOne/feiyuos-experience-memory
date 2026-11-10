@@ -190,7 +190,9 @@ def injected_names(skills_dir: str = None, session: str = "",
                     continue
                 if turn is not None and row.get("turn") != turn:
                     continue
-                names.extend(row.get("names") or [])
+                for n in row.get("names") or []:
+                    if n not in names:
+                        names.append(n)
     except OSError:
         return []
     seen = set()
@@ -304,8 +306,11 @@ def settle_auto_marks(episodes, actions=None, skills_dir: str = None,
                     continue
                 try:
                     row = json.loads(ln)
-                    manifest.setdefault((row.get("session"), row.get("turn")),
-                                        []).extend(row.get("names") or [])
+                    cur = manifest.setdefault((row.get("session"),
+                                               row.get("turn")), [])
+                    for n in row.get("names") or []:
+                        if n not in cur:      # cmb-P3a：多行 retrieve 合并去重
+                            cur.append(n)
                 except Exception:
                     continue
     except OSError:
@@ -329,20 +334,25 @@ def settle_auto_marks(episodes, actions=None, skills_dir: str = None,
         if e.get("verdict") != "success":
             skipped += 1
             new_settled.append(skey)
+            settled.add(skey)
             continue
         injected = manifest.get(skey) or []
         if not injected:
             skipped += 1
             new_settled.append(skey)
+            settled.add(skey)
             continue
         act_ids = set(e.get("actions") or [])
         used_keys = {keys_by_ep[i] for i in act_ids if i in keys_by_ep}
         complete = True        # intel 复审 A：settled 只在**全部落账后**写——
         for name in injected:  # 卡缺失/落盘失败 = 该回合不结，下次重试，
+            if not os.path.isdir(os.path.join(sdir, name)):
+                continue       # cmb-P1：harness 等非本仓卡名——忽略，
+                               # 不算 incomplete（否则 settled 永不写=每轮重标=灌水）
             path = os.path.join(sdir, name, "SKILL.md")   # 不许永久作废信用
             if not os.path.exists(path):
                 skipped += 1
-                complete = False
+                complete = False   # 目录在而 SKILL.md 缺：真损，可重试
                 continue
             front, body = load_skill(path)
             card_key = front.get("tool_key") or ""
