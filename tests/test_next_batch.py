@@ -313,6 +313,23 @@ class TestPendingPolicy(unittest.TestCase):
         self.assertNotIn("这张", DEFAULT_TASK_QUERY % "stardew.buy")
         self.assertNotIn("先查", DEFAULT_TASK_QUERY % "stardew.buy")
 
+    def test_dash_is_separator_not_evidence(self):
+        # 11-12 夜真库实锤：破折号族是**标点不是词**。不切则两重污染——
+        # ①它自己当证据（聊天回合噪声 top2 全靠它，8 卡里 4 张 description 写了
+        #   「——」）；②把邻字粘成 '手—''—不''天—' 垃圾 bigram，卡与查询两侧
+        #   都中招。真库上 35 条「只因破折号才过闸」的命中**全是 [RN 长信、全都
+        #   ≥80 字**，她自己的短动作查询一条没变（16.0%→16.0%）。
+        toks = retrieve._tokens("看看画面——怎么样")
+        self.assertFalse([t for t in toks if "—" in t], toks)
+        self.assertIn("画面", toks)          # 破折号两侧的字各自成词
+        self.assertIn("怎么", toks)
+        # 卡侧同理：带破折号的 anchor 不再产出破折号 token
+        cat = self._cat([{"name": "d", "description": "甲——乙", "state": "candidate",
+                          "tool_key": "x.d", "retrieval_anchor": "做完了——再对账",
+                          "task_query": "对账"}])
+        r = retrieve.retrieve_skills("—— ——", cat)
+        self.assertEqual([x["name"] for x in r["refs"]], [])   # 破折号单独出现不构成证据
+
 
 # ---------- 5) settled 台账压实 ----------
 
