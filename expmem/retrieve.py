@@ -54,13 +54,15 @@ def _tokens(s: str):
     """cmb-P0：空白分词+整 token 相等在中文上零召回（「怎么买种子」整串一个
     token，与 hay 永不相交，连弱命中都拿不到）。
 
-    修法（Suzu 同款加宽）：复合 token 按 [-_.] 再拆一层；CJK 串出**单字+bigram**
-    （单字管召回，bigram 管精度），英文原样。"""
+    修法（Suzu 同款加宽）：复合 token 按 [-_./] 再拆一层（11-12 夜加 '/'：
+    卡里 warp/move/face 斜杠连体和查询里图片路径 [图片:/home/...] 都会产出
+    'e/''nt''t/' 碎片乱匹配——路径分隔符两侧都必须切开）；CJK 串出
+    **单字+bigram**（单字管召回，bigram 管精度），英文原样。"""
     out = set()
     for t in re.split(r"[\s，,。？！?!；;、（）()]+", (s or "").lower()):
         if not t:
             continue
-        for sub in re.split(r"[-_.]+", t):
+        for sub in re.split(r"[-_./]+", t):
             if not sub:
                 continue
             if _CJK_RE.search(sub):

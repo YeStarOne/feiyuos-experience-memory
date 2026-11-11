@@ -342,6 +342,10 @@ _TASK_QUERY = {
     "stardew.store": "存仓库后当场确认 stored 非空",
 }
 
+# 默认 task_query 模板（11-12 夜）：绝不带「先查这张卡」级口语泛词——
+# 模板词进卡=全库检索噪声源（真库反事实实锤：聊天回合靠「这张」打中 buy 卡）
+DEFAULT_TASK_QUERY = "对 %s 的结果负责时"
+
 
 def _mechanical_anchor(tool_key: str, evs) -> str:
     """机械 anchor：tool_key 各段 + 证据 cmd 里的英文 token。中文同义词
@@ -453,7 +457,7 @@ def induct_specs(episodes, actions, existing_fronts=None, now_game_day=""):
                 k[len("stardew."):], n_fail, n_ok,
                 ("，主失败形态 %s" % dom_fc) if dom_fc else ""),
             "retrieval_anchor": _mechanical_anchor(k, evs),
-            "task_query": _TASK_QUERY.get(k, "对 %s 的结果负责时先查这张卡" % k),
+            "task_query": _TASK_QUERY.get(k, DEFAULT_TASK_QUERY % k),
             "evidence": evs,
             "stats": {"rows": total, "episodes": len(eps_seen), "days": len(days_seen),
                       "failure": n_fail, "success": n_ok,

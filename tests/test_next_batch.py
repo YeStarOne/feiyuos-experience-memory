@@ -286,6 +286,30 @@ class TestPendingPolicy(unittest.TestCase):
         r = retrieve.retrieve_skills("这张", cat)
         self.assertEqual(len(r["refs"]), 2)          # 两张都能过（旧行为保留）
 
+    def test_slash_split_hygiene_and_recall(self):
+        # 11-12 夜真库实锤：'/' 不切 → 卡里 warp/move/face 斜杠连体与查询里
+        # 图片路径 [图片:/home/...] 产出 'e/''nt''t/' 碎片乱匹配（sd-act 噪声）
+        cat = self._cat(
+            [{"name": "sd-act", "description": "星露谷 act", "state": "candidate",
+              "tool_key": "stardew.act", "retrieval_anchor": "act",
+              "task_query": "发一个改状态的动作（warp/move/face/use/select/interact）"}]
+            + [{"name": "card-%d" % i, "description": "星露谷 工具%d" % i,
+                "state": "candidate", "tool_key": "stardew.t%d" % i,
+                "retrieval_anchor": "tool%d zig%d" % (i, i),
+                "task_query": "对 stardew.t%d 的结果负责时" % i}
+               for i in range(7)]
+        )
+        r = retrieve.retrieve_skills("[图片:/home/agent/.dsh/media/media_1.jpg]", cat)
+        self.assertEqual([x["name"] for x in r["refs"]], [])   # 路径碎片不再命中
+        r2 = retrieve.retrieve_skills("warp", cat)
+        self.assertEqual([x["name"] for x in r2["refs"]], ["sd-act"])  # 连体词拆开可召回
+
+    def test_default_task_query_template_clean(self):
+        # 归纳模板不许再产出「先查这张卡」级口语泛词（检索噪声源，见真库反事实）
+        from expmem.consolidate import DEFAULT_TASK_QUERY
+        self.assertNotIn("这张", DEFAULT_TASK_QUERY % "stardew.buy")
+        self.assertNotIn("先查", DEFAULT_TASK_QUERY % "stardew.buy")
+
 
 # ---------- 5) settled 台账压实 ----------
 
