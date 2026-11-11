@@ -319,7 +319,7 @@ class TestManifestWiring(unittest.TestCase):
         import tempfile
         from expmem import api
         d = tempfile.mkdtemp()
-        sd = os.path.join(d, "onebot-private-1792612052-test")
+        sd = os.path.join(d, "onebot-private-1000000001-test")
         os.makedirs(sd)
         msg = ("Here are your available skills:\n<available_skills>\n"
                "- `stardew-store`: Use when storing items\n"
@@ -344,7 +344,7 @@ class TestManifestWiring(unittest.TestCase):
             for e in ev:
                 f.write(J.dumps(e, ensure_ascii=False) + NL)
         got = api.derive_manifest(d)
-        self.assertEqual(got, {("onebot-private-1792612052-test", 9):
+        self.assertEqual(got, {("onebot-private-1000000001-test", 9):
                                ["stardew-store", "agent-experience"]})
 
     def test_settle_aggregates_same_turn_episodes(self):

@@ -48,7 +48,7 @@
 ```
 
 - **配对率 8074/8072 = 100%**，未配对 0（`message.toolCallId` 对 `data.callId`）。所以延迟、成功率都能算准。
-- 归属分布：`onebot-private-1792612052` **6321/8072 = 78%**（主会话）；群 274；另一个私聊 180；其余是 automation 会话。
+- 归属分布：`onebot-private-1000000001` **6321/8072 = 78%**（主会话）；群 274；另一个私聊 180；其余是 automation 会话。
   ⚠️ **归属闸**：automation / 运维会话的调用不是"她的游戏经验"，adapter 必须按 session 前缀白名单过滤，否则技能会从 cron 里长出来。
 
 ### 1.2 工具层：她的游戏动作**藏在 bash 字符串里**
@@ -56,7 +56,7 @@
 - 4826 次 `bash` 里 **558 次含 `sd` 调用**（11.6%）；直连桥的 curl 只有 1 次。
   → 这意味着：**GameTraceAdapter 的入口不是某个 `stardew_*` 工具，而是 bash 命令解析**。
   （初版我用宽松正则数出 957，那是把日记/文档里出现的 "sd xxx" 和 heredoc 正文也算进去了；改成"按 `;`/`&&`/`||`/换行分段 + 遇 heredoc 截断 + verb 白名单"后是 558 —— **口径以 558 为准**。）
-- 实测动作量：**verb 级 1028 次**（含 `raw` 264）＋ **`sd raw <path>` 的路径调用 824 次**（76 个不同路径）→ 去重后 **≥1588 个游戏动作**，全部集中在**一个会话**：`onebot-private-1792612052-mvp9wgp5`。
+- 实测动作量：**verb 级 1028 次**（含 `raw` 264）＋ **`sd raw <path>` 的路径调用 824 次**（76 个不同路径）→ 去重后 **≥1588 个游戏动作**，全部集中在**一个会话**：`onebot-private-1000000001-mvp9wgp5`。
 - `sd raw` 的真实动作词表（这才是她的"动词"）：`/menu_close` 110、`/fishbot` 97、`/animals` 79、`/menu` 74、`/interact` 61、`/tool_area` 35、`/use` 25、`/click` 23、`/drop_item` 23、`/store` 17、`/eat` 17、`/buy` 17、`/rod` 16…
   ⚠️ 所以 adapter 不能只认 verb，**必须也认 `sd raw /path` 和命令替换 `$(sd raw …)` 里的调用**（子 shell 里很常见）。
 - `sd` 是固定调用器（服务器 `~/qq-workspace/bin/sd`，526 行），verb 集：`state / inv / near / shot / warp / move / act / use / water / plant / harvest / dig / sleep / buy / sell / day / key / wait / raw / farm`
@@ -144,7 +144,7 @@ def record_skill_feedback(fb: SkillFeedback) -> None
 
 ```json
 // Action
-{"id":"act_<sha1>","ts":1793020475158,"session":"onebot-private-1792612052-…",
+{"id":"act_<sha1>","ts":1793020475158,"session":"onebot-private-1000000001-…",
  "turn":2,"step":1,"source":"session-log","cwd":"/home/agent/qq-workspace",
  "tool":"bash","adapter":"stardew_sd","verb":"farm_report","sub_idx":0,
  "endpoint":"GET /farm_report","args":{"raw":"sd farm_report"},

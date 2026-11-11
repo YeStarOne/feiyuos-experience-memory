@@ -143,7 +143,7 @@ class TestAttribution(unittest.TestCase):
               "meta": {"cwd": "/home/agent/qq-workspace"}}},
             {"type": "turn/end", "seq": 4, "time": 1200, "data": {"turn": 1}},
         ]
-        acts = "onebot-private-1792612052-test"
+        acts = "onebot-private-1000000001-test"
         actions, episodes, st = build_session(ev, acts)
         self.assertEqual([a.verb for a in actions], ["warp", "raw", "state"])
         ep = episodes[0]

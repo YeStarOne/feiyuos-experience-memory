@@ -11,11 +11,18 @@ import json
 import os
 import subprocess
 
-OWNER_PREFIXES = (
-    "onebot-private-1792612052",   # 主会话（78% 调用在这里）
-    "onebot-private-1848785393",
-    "onebot-group-427592205",
-)
+# 隐私：真实 QQ 号不入公共仓。部署侧放 expmem/_owner_local.py（gitignored）覆盖；
+# 仓库默认用假号 1000000001/2/3，测试夹具同号，全仓替换保持一致。
+try:  # pragma: no cover — 部署侧文件，仓库里永远不存在
+    from .. import _owner_local as _owner_local_mod
+
+    OWNER_PREFIXES = tuple(_owner_local_mod.OWNER_PREFIXES)
+except ImportError:
+    OWNER_PREFIXES = (
+        "onebot-private-1000000001",   # 主会话（78% 调用在这里）
+        "onebot-private-1000000002",
+        "onebot-group-1000000003",
+    )
 AUTOMATION_PREFIX = "dsh-automation-session"
 
 

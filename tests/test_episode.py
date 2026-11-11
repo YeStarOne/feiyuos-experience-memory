@@ -5,7 +5,7 @@ import unittest
 from expmem.episode import build_session
 from expmem.sources.session_log import classify
 
-OWNER = "onebot-private-1792612052-test"
+OWNER = "onebot-private-1000000001-test"
 AUTO = "dsh-automation-session-test"
 
 
@@ -219,7 +219,7 @@ class TestGoalHint(unittest.TestCase):
         body = ("\n[以下为系统信息，非用户发言：可能相关的记忆，自行判断是否需要提及]\n"
                 "- 记忆一（7天前）\n- 记忆二（6天前）\n\n"
                 "Use life_propose(turnId=\"x\", lifeEvents=[...])\n"
-                "<user_message qq=\"1792612052\" nickname=\"主人\">\n"
+                "<user_message qq=\"1000000001\" nickname=\"主人\">\n"
                 "把包里一件东西用 /store 存进箱子，同回合立刻对账\n</user_message>")
         ev = [
             {"type": "turn/start", "seq": 1, "time": 1000, "data": {"turn": 1}},
@@ -269,7 +269,7 @@ class TestGoalHint(unittest.TestCase):
         # 真链路实崩（16fd0ba 服务器首跑 KeyError 'hint'）：gap 切分重建
         # open_turn 时把 hint 丢了——切分后的两个分片都要带上
         import json as J
-        hint_body = ("<user_message qq=\"1792612052\">把东西存进箱子</user_message>")
+        hint_body = ("<user_message qq=\"1000000001\">把东西存进箱子</user_message>")
         ev = [
             {"type": "turn/start", "seq": 1, "time": 1000, "data": {"turn": 1}},
             self._usermsg(2, 1005, hint_body),
