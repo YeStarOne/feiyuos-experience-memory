@@ -210,10 +210,13 @@ class TestGateRegression(unittest.TestCase):
         self.assertEqual(retrieve_skills("是不是", self.cat)["refs"], [])
 
     def test_single_char_pile_does_not_pass(self):
-        # 「一下」→ matched 里只有单字（一/下），旧规则 hit=2 就过闸了
+        # 「一下」→ 旧规则 matched 里只有单字（一/下），hit=2 就过闸了。
+        # 11-12 深夜「一/下」进了 STOPCHARS ⇒ 现在连 token 都产不出来
+        # （dropped_weak=0 是**更好**的结果：不再是"命中后被丢弃"，是根本不命中）。
         r = retrieve_skills("一下", self.cat)
         self.assertEqual(r["refs"], [])
-        self.assertGreater(r["dropped_weak"], 0)   # 有命中但被丢，计数看得见
+        self.assertEqual(r["dropped_weak"], 0)
+        self.assertEqual(r["generic_only"], 0)
 
     def test_three_real_false_positives_now_blocked(self):
         for q in ("外面是不是要下雨", "能不能休息一会儿", "她怎么还没回话"):
@@ -228,12 +231,11 @@ class TestGateRegression(unittest.TestCase):
 
     def test_known_residual_documented(self):
         # cmb 记的残余：「一个」里的「个」不是功能字，旧规则（min_multi=1）会过闸。
-        # 11-12 夜把 min_multi 提到 2 后这条残余**已关闭**——「一个」只产出
-        # 「一个」这 1 个多字命中，不够两条证据。仍然有命中，所以 dropped_weak
-        # 要看得见（不是靠悄悄消失）。
+        # 两步收口：11-12 夜 min_multi 提到 2（「一个」只剩 1 个多字命中）；
+        # 同一夜「一/个」也进了 STOPCHARS ⇒ 现在 token 集为空，连弱命中都没有。
         r = retrieve_skills("一个", self.cat)
         self.assertEqual(r["refs"], [])
-        self.assertGreater(r["dropped_weak"], 0)
+        self.assertEqual(r["dropped_weak"], 0)
 
     def test_empty_refs_still_tells_her_the_book_exists(self):
         r = retrieve_skills("咖啡因摄入", self.cat)

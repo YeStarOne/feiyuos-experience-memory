@@ -527,5 +527,60 @@ class TestUnreachableAudit(unittest.TestCase):
             shutil.rmtree(d, ignore_errors=True)
 
 
+class TestFunctionWordStripping(unittest.TestCase):
+    """虚字剥离（11-12 深夜）：真库噪声 88/757→59/757、误召 1→0、召回零损失。
+
+    鉴别特征是**两侧都虚才算虚**——「一下」「什么」是句法，「浇水」「对账」
+    是内容，后者必须存活（已逐条验证）。
+    """
+
+    def test_pure_function_bigrams_are_dropped(self):
+        from expmem.retrieve import _tokens
+        # 只有**两侧都虚**的 bigram 才被拦（「好吧」里「好」是实词，故不在此列）
+        for s in ("发一下", "买什么", "什么鱼", "么么", "一下"):
+            toks = _tokens(s)
+            for junk in ("一下", "什么", "么么", "一", "下", "什", "么"):
+                self.assertNotIn(junk, toks, "「%s」里的虚词 %r 不该进 token" % (s, junk))
+
+    def test_content_bigrams_survive(self):
+        # 零误伤：这些是实词，剥虚字绝不能碰到
+        from expmem.retrieve import _tokens
+        for s, must in (("浇水", "浇水"), ("钓鱼", "钓鱼"), ("对账", "对账"),
+                        ("菜熟了", "菜熟"), ("菜熟了", "熟了"), ("种地", "种地"),
+                        ("夜市", "夜市"), ("下矿", "下矿"), ("个人", "个人"),
+                        ("下面", "下面"), ("好吧", "好吧")):
+            self.assertIn(must, _tokens(s), "实词 %r 被误剥了" % must)
+
+    def test_single_content_char_survives(self):
+        # 「下矿」的单字「下」被剥（它是虚字），但「矿」必须留——单字管召回
+        from expmem.retrieve import _tokens
+        self.assertIn("矿", _tokens("下矿"))
+        self.assertIn("鱼", _tokens("什么鱼"))
+
+    def test_social_chatter_no_longer_pulls_card(self):
+        # 头号案发现场：她随口一句「哈哈，鱼鱼发一下今天的黑盒文章草稿吧」
+        # 曾靠 `一下`+`发一` 两个纯虚 bigram 命中 sd-act。
+        # 这里卡锚**只写虚词**（模拟靠模板词吸流量的卡）：剥离后必须零命中。
+        import tempfile, shutil, os
+        from expmem import retrieve as R
+        d = tempfile.mkdtemp()
+        try:
+            p = os.path.join(d, "c", "SKILL.md")
+            os.makedirs(os.path.dirname(p))
+            with open(p, "w", encoding="utf-8") as f:
+                f.write('---\n%s\n---\n\n# x\n' % json.dumps({
+                    "name": "c", "state": "candidate", "tool_key": "sd.act",
+                    "retrieval_anchor": "一下 什么 一个 好吧",
+                    "task_query": "一下 什么",
+                }, ensure_ascii=False))
+            cat = R.load_catalog(d)
+            got = R.retrieve_skills(
+                "哈哈，鱼鱼发一下今天的黑盒文章草稿吧，有意思的都写进去", cat)
+            self.assertEqual(got["refs"], [],
+                             "纯虚 bigram 又当上证据了：%r" % got["refs"])
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+
 if __name__ == "__main__":
     unittest.main()
