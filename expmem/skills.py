@@ -163,18 +163,12 @@ import contextlib
 
 @contextlib.contextmanager
 def file_lock(path):
-    """单机文件锁（评审 11-12 P1-4）：flock 独占；点前缀锁文件不入检索。"""
-    import fcntl
-    os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
-    fh = open(path, "a")
-    try:
-        fcntl.flock(fh, fcntl.LOCK_EX)
-        yield fh
-    finally:
-        try:
-            fcntl.flock(fh, fcntl.LOCK_UN)
-        finally:
-            fh.close()
+    """单机文件锁（评审 11-12 P1-4）：flock 独占；点前缀锁文件不入检索。
+    11-12 起委托 locks.exclusive_lock（跨平台：Windows 走 msvcrt，本文件
+    不再绑 fcntl——Windows 测试机同样能跑并发用例）。"""
+    from .locks import exclusive_lock
+    with exclusive_lock(path):
+        yield
 
 
 @contextlib.contextmanager

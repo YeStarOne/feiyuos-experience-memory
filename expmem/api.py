@@ -11,7 +11,8 @@ import re
 
 from .store import AppendOnly
 from .sources.session_log import session_files, classify, iter_events
-from .episode import build_session
+from .episode import build_session, PARSER_V
+from .outcome import OUTCOME_V
 from .bench import bench
 
 ACTION_FIELDS = ("success", "failure", "unknown", "interrupted")
@@ -25,12 +26,40 @@ def _sha_file(path: str) -> str:
     return h.hexdigest()[:16]
 
 
-def replay(root: str, out_dir: str) -> dict:
+def _check_meta(out_dir: str):
+    """混合重放闸（11-12 下一批）：out_dir/meta.json 记着这份数据是哪代
+    解析器（PARSER_V）与哪版判据（OUTCOME_V）写的；AppendOnly 只追加不改
+    历史，版本不一致继续重放 = 新旧行混一锅，谁都说不清这把尺量的是什么。
+    fail-closed：读不动/缺键（无版本信息的旧产物）当未知，拒绝并指路。"""
+    path = os.path.join(out_dir, "meta.json")
+    if not os.path.exists(path):
+        return   # 无 meta.json 的旧产物放行：首次重放补写 meta，之后闸生效
+    try:
+        with open(path, encoding="utf-8") as f:
+            old = json.load(f)
+    except Exception:
+        old = {}
+    for k, cur in (("parser_v", PARSER_V), ("outcome_v", OUTCOME_V)):
+        ov = old.get(k)
+        if ov is None or int(ov) != cur:
+            raise ValueError(
+                "out_dir 与当前代码版本不一致（meta.json %s=%r，当前=%d）："
+                "AppendOnly 改不了历史，混放会造出两代行并存的数据集——"
+                "换一个新 out_dir 重放，或把旧目录整体归档" % (k, ov, cur))
+
+
+def replay(root: str, out_dir: str, source: str = "execution") -> dict:
     """只读重放：sessions root → actions.jsonl / episodes.jsonl / metrics.json。
 
-    幂等：同目录重跑不产生重复行（AppendOnly 按 id 去重）。
+    幂等：同目录重跑不产生重复行（AppendOnly 按 id 去重，跨进程亦然——
+    store 内部有独占锁+吸收）。
+    版本闸：out_dir/meta.json 记 PARSER_V/OUTCOME_V，不一致直接拒绝（拒绝
+    混合重放，评审遗留项）。
+    source（11-12 下一批）：证据来源标签，落进每个 episode 行；非 "execution"
+    的重放（bench/fixture 灌数）consolidate 侧一律拒绝进归纳轨。
     验收判据（方案 §4-S0）都落在 metrics 里。"""
     os.makedirs(out_dir, exist_ok=True)
+    _check_meta(out_dir)
     a_store = AppendOnly(os.path.join(out_dir, "actions.jsonl"))
     e_store = AppendOnly(os.path.join(out_dir, "episodes.jsonl"), key="episode_id")
     m = {
@@ -69,6 +98,7 @@ def replay(root: str, out_dir: str) -> dict:
                 act_rows.append(row)
                 a_store.append(row)
             for e in episodes:
+                e["source"] = source            # 11-12 下一批：来源随行落盘
                 e_store.append(e)  # build_session 返回的就是 row dict（已含 S1 outcome 分类）
                 ep_rows.append(e)
             m["automation_rows_in_outputs"] += sum(
@@ -95,6 +125,11 @@ def replay(root: str, out_dir: str) -> dict:
     m["sha_episodes"] = _sha_file(os.path.join(out_dir, "episodes.jsonl"))
     with open(os.path.join(out_dir, "metrics.json"), "w", encoding="utf-8") as f:
         json.dump(m, f, ensure_ascii=False, sort_keys=True, indent=1)
+    # 版本元数据（11-12 下一批）：下一次重放靠它识别"这是同一把尺写的数据"
+    with open(os.path.join(out_dir, "meta.json"), "w", encoding="utf-8") as f:
+        json.dump({"parser_v": PARSER_V, "outcome_v": OUTCOME_V,
+                   "source": source, "root": root}, f,
+                  ensure_ascii=False, sort_keys=True, indent=1)
     b = bench(ep_rows, act_rows)
     with open(os.path.join(out_dir, "bench.json"), "w", encoding="utf-8") as f:
         json.dump(b, f, ensure_ascii=False, sort_keys=True, indent=1)
@@ -295,11 +330,66 @@ def record_skill_feedback(fb, shown_ids=(), manual_review=False) -> dict:
     return {"applied": applied, "reason": reason, "front": new_front}
 
 
-SETTLE_VERDICT_V = 2
-# 判据版本：v2=S4 引入 success verdict（goal_hint+写效果+写后探针闭环）——
-# v1 行（含今晚全是 unknown 的历史结清）自动视为未结算重判；
-# settled 行带 v，读取时 v<当前版 视为未结算（历史 unknown 结清不许
+SETTLE_VERDICT_V = OUTCOME_V
+# 判据版本：直接对齐 outcome.py 的 OUTCOME_V（v2=S4 引入 success verdict）——
+# 判据抬版时这里自动跟，v1 行（含今晚全是 unknown 的历史结清）自动视为未结算
+# 重判；settled 行带 v，读取时 v<当前版 视为未结算（历史 unknown 结清不许
 # 永久封死未来的重判/重放信用，cmb-P1-forward）。
+# 台账压实（11-12 下一批）：settled 行数超过阈值就压实——同 (session,turn)
+# 只留 max(v) 行（消费语义本来就是取 max(v)，压实不改判读），旧文件留 .bak。
+# 只在 .settled.lock 内做（_settle_locked 全程持锁）。台账是幂等账不是证据链，
+# 压实有备份、有阈值、可重放（重放全史会把该结的重新结出来），不算改历史。
+SETTLED_COMPACT_AT = 2000
+
+
+def _compact_settled(settled_path: str) -> int:
+    """同 (session,turn) 只留 max(v) 行，原子替换，旧文件留 .bak。
+    返回压实后的行数；文件不存在/为空返回 0（不动）。坏行不带走（留 .bak 里）。"""
+    try:
+        with open(settled_path, encoding="utf-8") as f:
+            rows = [ln.strip() for ln in f if ln.strip()]
+    except OSError:
+        return 0
+    if not rows:
+        return 0
+    best, order = {}, []
+    bad = []
+    for ln in rows:
+        try:
+            row = json.loads(ln)
+            k = (row.get("session"), row.get("turn"))
+        except Exception:
+            bad.append(ln)
+            continue
+        if k not in best:
+            best[k] = row
+            order.append(k)
+        else:
+            if (row.get("v") or 0) >= (best[k].get("v") or 0):
+                best[k] = row          # 同键取 max(v)；同 v 取后写的
+    if len(order) + len(bad) == len(rows) and len(bad) == 0:
+        return len(rows)               # 没有可压空间：原样不动（幂等）
+    import tempfile
+    d = os.path.dirname(os.path.abspath(settled_path)) or "."
+    compact = [json.dumps(best[k], ensure_ascii=False, sort_keys=True)
+               for k in order] + bad
+    fd, tmp = tempfile.mkstemp(prefix=".settled.", suffix=".tmp", dir=d)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+            for ln in compact:
+                f.write(ln + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(settled_path, settled_path + ".bak")
+        os.replace(tmp, settled_path)
+        os.chmod(settled_path, 0o644)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    return len(compact)
 
 
 def settle_auto_marks(episodes, actions=None, skills_dir: str = None,
@@ -458,6 +548,7 @@ def _settle_locked(episodes, actions=None, sdir=None,
             reasons["complete"] = reasons.get("complete", 0) + 1
             new_settled.append(skey + ("complete",))
             settled.add(skey)                 # cmb-P2：同回合多集（gap 切分）同轮单标
+    compacted = 0
     if new_settled:
         try:
             with open(settled_path, "a", encoding="utf-8") as f:
@@ -467,5 +558,12 @@ def _settle_locked(episodes, actions=None, sdir=None,
                                        ensure_ascii=False, sort_keys=True) + "\n")
         except OSError:
             pass
+        # 台账压实（11-12 下一批）：超阈值就地压（同键留 max(v)），仍在锁内
+        try:
+            n_lines = sum(1 for _ in open(settled_path, encoding="utf-8"))
+            if n_lines > SETTLED_COMPACT_AT:
+                compacted = _compact_settled(settled_path)
+        except OSError:
+            pass
     return {"marked": marked, "skipped": skipped, "already_settled": already,
-            "reasons": reasons}
+            "reasons": reasons, "compacted": compacted}

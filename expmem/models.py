@@ -49,6 +49,10 @@ class Episode:
     goal_hint: str = ""
     actions: list = field(default_factory=list)   # Action.id 列表
     verdict: str = "unknown"      # 四值：success|failure|unknown|interrupted（外部打断≠她的失败）
+    # 证据来源（11-12 下一批，additive）：execution=真跑日志（唯一进归纳轨的）；
+    # bench/fixture 等其他来源给评测用，consolidate 侧一律拒绝——基准证据
+    # 不许冒充她的执行经验（execution_evidence vs benchmark_evidence 分离）
+    source: str = "execution"
     probe_status: str = "unavailable"  # ok|unavailable：unavailable→unknown，不进 bench 分母（cmb-B）
     failure_class: str = ""       # noop|blocked|stale|partial（wrong_arg 11-11 退役：钱包共享/隔日结算，余额差不可判扣款；stale/partial 留给 S2）
     act_count: int = 0            # 便利列：本集动作数；game = act_count 且含 sd 动作

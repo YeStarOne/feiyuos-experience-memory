@@ -60,6 +60,12 @@ def scan_candidates(episodes, actions, now_game_day=""):
     groups = {}
     dropped = []
     for e in (episodes or []):
+        # 执行/基准分离（11-12 下一批）：bench/fixture 行不进失败轨——
+        # 基准证据冒充她的执行经验，卡就学会了"考场上才会做"的事
+        if (e.get("source") or "execution") != "execution":
+            dropped.append({"episode": e.get("episode_id"),
+                            "reason": "non_execution_source"})
+            continue
         if e.get("verdict") != "failure":
             continue
         fc = e.get("failure_class") or ""
@@ -185,6 +191,12 @@ def scan_success(episodes, actions, stats=None):
     cand = []           # (session, call_id) -> 首个匹配（含动词信息）
     rows = []
     for e in (episodes or []):
+        # 执行/基准分离（11-12 下一批）：与失败轨同口径，bench/fixture 不进成功轨
+        if (e.get("source") or "execution") != "execution":
+            if stats is not None:
+                stats["excluded_non_execution"] = \
+                    stats.get("excluded_non_execution", 0) + 1
+            continue
         if e.get("verdict") != "success":
             continue            # 只认 outcome.py 判定的 success（评审 11-12 P1-1）：
                                 # unknown/interrupted 的正向信号同样不进成功轨——

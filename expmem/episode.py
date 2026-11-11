@@ -22,6 +22,10 @@ from .sources.session_log import classify
 from .outcome import classify_episode
 
 _ONE_SPACE = re.compile(r"\s+")
+# 采集/切分结构版本（11-12 下一批）：api.replay 落进 out_dir/meta.json，
+# 版本不一致的重放直接拒绝（AppendOnly 改不了历史，混合两代结构的数据集
+# 不是同一把尺——拒绝重放好过静默混行）。
+PARSER_V = 1
 EPISODE_GAP_S = 600          # cmb-G2：同一回合内相邻动作间隔超过 10 分钟就切
 POLL_WINDOW_S = 30           # cmb-G2：轮询重复窗口
 # cmb-G1 实测样式（sd.py cmd_state 146-149 行 + 4 条真实 out_head 核实）：

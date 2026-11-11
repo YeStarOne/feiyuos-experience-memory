@@ -13,6 +13,25 @@ memory-hub / auto-memory / 手册§8 / shared-memory.md（知识层），两层�
 通用化按 Action/Episode 协议走 **Adapter + Outcome Evaluator** 两个扩展点，
 不为每个游戏另起一套技能记忆（见 docs/00-plan.md）。
 
+## 行为语义（2026-11-12 下一批）
+
+- **AppendOnly 跨进程幂等**：每次 append 在 `.lock` 独占锁内先吸收别家写入的行
+  再判重；崩溃残行补换行终止、留档不删。POSIX=flock，Windows=msvcrt（测试机
+  同样能跑并发用例）。
+- **replay 版本闸**：out_dir/meta.json 记 parser_v/outcome_v，与代码版本不一致
+  的重放直接拒绝——AppendOnly 改不了历史，两代行混一锅不是同一把尺。无 meta
+  的旧目录放行（首次重放补写 meta，之后闸生效）。
+- **执行/基准分离**：episode 带 `source`（默认 execution）；bench/fixture 来源
+  的行不进归纳两轨（dropped 记 non_execution_source）。基准证据不许冒充她的
+  执行经验。
+- **pending_review 不进目录行**：矛盾/待二审的卡只进冲突对与 total_active
+  （pending_hidden 计数）——注入未裁决的答案比不递更糟。candidate 照旧可召回
+  （candidate→observed 的实验回路依赖被使用）。
+- **冲突对不要求双边进目录**：注入侧的 contradicts 指着库里 active 的对手卡
+  就标「同键两版未裁决」；deprecated 对手不算悬案。
+- **settled 台账压实**：超 2000 行就地压（同 (session,turn) 留 max(v)，消费
+  语义不变），旧文件留 .bak；压实只在 .settled.lock 内做。
+
 ## 她昨晚怎么用它（真实例子，2026-11-11 凌晨）
 
 **1. 02:44 — 三张卡悄悄进了技能架。**

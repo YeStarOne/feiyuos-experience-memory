@@ -34,6 +34,11 @@ READY_RE = re.compile(r"[\"']?ready[\"']?\s*[:=]\s*(\d+)")
 # （11-11 主人纠正：主持也赚/花、卖货隔日结算——余额差一律不作证据）
 CHARGE_JSON_RE = re.compile(r"\"(?:charge|cost|spent|totalCost)\"\s*:\s*(\d+)", re.I)
 
+# 判据版本（11-12 下一批）：v2 = S4 引入 success verdict（写效果+写后探针闭环）。
+# api.replay 把它落进 out_dir/meta.json；版本不一致的重放直接拒绝——
+# AppendOnly 只追加不改历史，混着 v1 行和 v2 行的数据集没法当同一把尺用。
+OUTCOME_V = 2
+
 PROBE_VERBS = frozenset("state inv near farm".split())
 PROBE_RAW_PREFIX = ("/state", "/farm_report", "/inv", "/animals")
 

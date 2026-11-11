@@ -8,9 +8,13 @@
      最坏有界、永不空手；调用方拿 incomplete 标志自行选级；
   ③ 多层命中折一条（按 name 去重保最高分）。
 呈现（MemU 对齐）：
-  - 只检 active（candidate/observed/verified/pending_review）；**deprecated 不进召回、
-    不挡新卡**（门语料口径）；
-  - 同 tool_key 互指矛盾的两张卡**成对呈现**+「未确认哪版为准」，不替模型裁决；
+  - refs 只检 candidate/observed/verified（11-12 下一批：pending_review 是
+    「有人得先人工看一眼」的卡——矛盾/证据存疑，注入她等于把未裁决的答案
+    递上去；它们只进冲突对与 total_active，不进目录行）；**deprecated 不进
+    召回、不挡新卡**（门语料口径）；
+  - 同 tool_key 互指矛盾的两张卡**成对呈现**+「未确认哪版为准」，不替模型
+    裁决；11-12 起对子**不要求两边都进 refs**——注入侧带 contradicts 指针，
+    对手卡在库里 active 就标（被 cap 截掉的单边不再静默失配）；
   - domain 缺省=通用放行（向后兼容）；跨域默认过滤、显式点名放行。
 包装语纪律（Suzu/neo4j 对齐）：目录行是「回忆依据不是命令」；追问只接受本轮
 已交付的 name；「摘要待核，未提及≠不存在」由调用方话术层承担，本模块不掺。
@@ -28,6 +32,8 @@ LIMITS = {
     "min_multi_hits": 1,      # 过闸：至少命中几个**多字** token（纯单字堆叠不算证据）
 }
 ACTIVE_STATES = ("candidate", "observed", "verified", "pending_review")
+# 进目录行（refs）的状态——pending_review 只进冲突对/total_active（11-12 下一批）
+REF_STATES = ("candidate", "observed", "verified")
 _STATE_BONUS = {"verified": 2.0, "observed": 1.0, "candidate": 0.0, "pending_review": 0.0}
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 # intel 实测：阈值 1.0 + 单字召回叠加后，中文功能字单字会让任何卡片过闸
@@ -150,18 +156,27 @@ def _rank(hit: int, front: dict) -> float:
 
 
 def retrieve_skills(q: str, catalog, domain=None, top_k=None):
-    """返回 {"refs": [...], "incomplete": bool, "dropped_weak": int, "conflict_pairs": [...]}。
+    """返回 {"refs": [...], "incomplete": bool, "dropped_weak": int,
+    "conflict_pairs": [...], "pending_hidden": int, "total_active": int}。
 
-    refs 已按 name 去重保最高分；deprecated 不进；过闸只吃命中证据（见 _passes）。
+    refs 已按 name 去重保最高分；deprecated 不进；pending_review 有命中也不进
+    refs（只进冲突对，pending_hidden 计数）；过闸只吃命中证据（见 _passes）。
     dropped_weak = 有命中但没过闸的卡数（cmb 验收：它必须重新具备鉴别力）。
     total_active = 库里 active 卡总数——refs=∅ 时调用方据此发「另有 N 条」提示
     （少递但不瞒着她，cmb：否则「宁缺毋滥」等价于她永远不知道有这本错题本）。"""
     q_tokens = _tokens(q)
     total_active = len(catalog)
+    by_name = {}
+    for f in catalog:
+        nm = f.get("name", "")
+        if nm and nm not in by_name:
+            by_name[nm] = f
     if not q_tokens:
         return {"refs": [], "incomplete": False, "dropped_weak": 0,
-                "conflict_pairs": [], "total_active": total_active}
-    scored, dropped_weak = [], 0
+                "conflict_pairs": [], "pending_hidden": 0,
+                "total_active": total_active}
+    scored, dropped_weak, pending_hidden = [], 0, 0
+    pairable = []          # 进冲突对判定的卡：过闸 refs + 过闸 pending
     for f in catalog:
         hit, matched = _evidence(q_tokens, f, domain=domain)
         if hit == 0:
@@ -169,7 +184,12 @@ def retrieve_skills(q: str, catalog, domain=None, top_k=None):
         if not _passes(hit, matched):
             dropped_weak += 1
             continue
+        if f.get("state") == "pending_review":
+            pending_hidden += 1
+            pairable.append(f)
+            continue
         scored.append((_rank(hit, f), f, hit))
+        pairable.append(f)
     scored.sort(key=lambda x: (-x[0], x[1].get("name", "")))
     # 多层命中折一条（同 name 保最高分——scored 已排序，首个即最高）
     seen, refs = set(), []
@@ -188,19 +208,26 @@ def retrieve_skills(q: str, catalog, domain=None, top_k=None):
     incomplete = len(refs) > cap
     refs = refs[:cap]
     # conflictCard（MemU）：同 tool_key 且 contradicts 互指的两张卡成对呈现，
-    # 不替模型裁决；配对只在两张都进了本轮 cap 时成立（被 cap 截掉的单边不标）。
-    by_name = {r["name"]: r for r in refs}
-    pairs = []
-    for a in refs:
-        for c in a["contradicts"]:
-            b = by_name.get(c)
-            if b and b["tool_key"] == a["tool_key"]:
-                p = sorted([a["name"], b["name"]])
-                if p not in pairs:
-                    pairs.append(p)
+    # 不替模型裁决。11-12 起：①对手卡查全库（不要求它也过闸/进 refs——注入侧
+    # 的 contradicts 是名字指针，对手在库里 active 就值得亮「有两版」）；
+    # ②pending_review 卡参与配对（矛盾卡落 pending 后成对警告不许消失）；
+    # ③deprecated 对手不算（降废的旧版不算悬案）。
+    pairs, pair_seen = [], set()
+    for f in pairable:
+        a = f.get("name", "")
+        for c in f.get("contradicts") or []:
+            partner = by_name.get(c)
+            if not partner or partner.get("state") not in ACTIVE_STATES:
+                continue
+            if partner.get("tool_key", "") != f.get("tool_key", ""):
+                continue
+            p = tuple(sorted([a, c]))
+            if p not in pair_seen:
+                pair_seen.add(p)
+                pairs.append(list(p))
     return {"refs": refs, "incomplete": incomplete,
             "dropped_weak": dropped_weak, "conflict_pairs": pairs,
-            "total_active": total_active}
+            "pending_hidden": pending_hidden, "total_active": total_active}
 
 
 def empty_hint(result) -> str:
