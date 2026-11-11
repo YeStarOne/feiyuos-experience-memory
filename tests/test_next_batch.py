@@ -448,5 +448,84 @@ class TestSettleCompaction(unittest.TestCase):
             shutil.rmtree(sdir, ignore_errors=True)
 
 
+class TestUnreachableAudit(unittest.TestCase):
+    """11-12 夜真库发现：21 张卡里 13 张**永远进不了检索**，而没有任何地方报出来。
+
+    它们不是被闸挡的（闸挡了会进 dropped_weak，看得见），而是根本没进 catalog：
+    缺 state / 缺检索必需字段 / 没有 frontmatter。检索侧与「不存在」等价，
+    load_catalog 静默 continue——她也永远不知道错题本有这几页。
+    """
+
+    def _mk(self, name, front, body="- 正文"):
+        import tempfile, os, json as J
+        d = tempfile.mkdtemp()
+        p = os.path.join(d, name)
+        os.makedirs(p)
+        text = ("---\n%s\n---\n%s" % (J.dumps(front, ensure_ascii=False), body)
+                if front is not None else body)
+        with open(os.path.join(p, "SKILL.md"), "w", encoding="utf-8") as f:
+            f.write(text)
+        return d
+
+    def test_counts_and_reasons(self):
+        import tempfile, shutil
+        good = {"name": "good", "state": "candidate", "tool_key": "a.b",
+                "retrieval_anchor": "对账 state", "task_query": "核对"}
+        no_state = {"name": "nostate", "description": "x", "confidence": 0.9,
+                    "retrieval_anchor": "对账", "task_query": "核对"}
+        no_anchor = {"name": "noanchor", "state": "candidate", "tool_key": "a.c",
+                     "description": "x"}
+        dirs = [self._mk("good", good), self._mk("nostate", no_state),
+                self._mk("noanchor", no_anchor),
+                self._mk("nofm", None, "# 只有正文")]
+        try:
+            # 合成一个卡库：把四个临时目录的 SKILL.md 挪到一个根下
+            root = tempfile.mkdtemp()
+            for d in dirs:
+                for nm in os.listdir(d):
+                    shutil.copytree(os.path.join(d, nm), os.path.join(root, nm))
+            from expmem.retrieve import audit_unreachable
+            rep = audit_unreachable(root)
+            self.assertEqual(rep["total"], 4)
+            # noanchor 能进库（load_catalog 只认 state），但 _hay 只剩
+            # name+description ⇒ 归 weak_hay，不是 unreachable
+            self.assertEqual(rep["loaded"], 2)
+            self.assertEqual(len(rep["unreachable"]), 2)
+            self.assertEqual(len(rep["weak_hay"]), 1)
+            reasons = {os.path.basename(os.path.dirname(r["path"])): r["reason"]
+                       for r in rep["unreachable"]}
+            self.assertIn("state", reasons["nostate"])
+            self.assertIn("frontmatter", reasons["nofm"])
+            weak = {os.path.basename(os.path.dirname(r["path"])): r["reason"]
+                    for r in rep["weak_hay"]}
+            self.assertIn("retrieval_anchor", weak["noanchor"])
+        finally:
+            for d in dirs + [root]:
+                shutil.rmtree(d, ignore_errors=True)
+
+    def test_cli_exit_code_is_a_real_gate(self):
+        # `audit` 的退出码就是闸：有卡进不去 → 非零。曾经 __main__ 里直接
+        # 调 main() 会把这个 return 丢掉（闸恒 0 = 假绿）。
+        import tempfile, shutil, io, contextlib
+        from expmem import cli
+        good = {"name": "g", "state": "candidate", "tool_key": "a.b",
+                "retrieval_anchor": "对账", "task_query": "核对"}
+        d = self._mk("g", good)
+        try:
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc_ok = cli.main(["audit", "--skills", d])
+            self.assertEqual(rc_ok, 0)
+            bad = self._mk("bad", {"name": "b", "description": "x"})
+            try:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    rc_bad = cli.main(["audit", "--skills", bad])
+                self.assertEqual(rc_bad, 1)
+            finally:
+                shutil.rmtree(bad, ignore_errors=True)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+
 if __name__ == "__main__":
     unittest.main()

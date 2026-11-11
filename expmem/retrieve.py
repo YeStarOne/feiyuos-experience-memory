@@ -134,6 +134,74 @@ def load_catalog(skills_dir: str):
     return fronts
 
 
+def audit_unreachable(skills_dir: str) -> dict:
+    """哪些卡**永远进不了检索**——静默盲区审计（11-12 夜）。
+
+    起因：真库 21 张卡里 13 张从来没被召回。它们不是被闸挡的（闸挡了会进
+    dropped_weak，看得见），而是**根本没进 catalog**：缺 `state`（旧卡手写，
+    frontmatter 只有 description/confidence/evidence），或整个文件没有
+    frontmatter。这种卡在检索侧与「不存在」等价，而 `load_catalog` 静默
+    `continue`——没有任何地方会报出来，她也永远不知道这本错题本有这几页。
+
+    两种盲区分开报（修法完全不同）：
+      - `unreachable`：load_catalog 直接跳过（缺 state / 无 frontmatter /
+        坏 JSON / counter≤0）——**加字段就能救**；
+      - `weak_hay`：进了 catalog，但缺 retrieval_anchor/task_query ⇒ `_hay`
+        只剩 name+description，几乎与任何查询零相交——**要重写锚词**，
+        补字段救不了（它本来就在库里，只是召回不了）。
+
+    返回 {"total", "loaded", "unreachable": [...], "weak_hay": [...]}。
+    reason 只报**第一处**缺失，便于一次修一个（缺 state 的卡补完 state 往往
+    还会暴露缺 name，分两轮比一次报五个好改）。"""
+    out = {"total": 0, "loaded": 0, "unreachable": [], "weak_hay": []}
+    paths = sorted(glob.glob(os.path.join(skills_dir, "**", "*.md"), recursive=True))
+    by_path = {f["_path"]: f for f in load_catalog(skills_dir)}
+    for p in paths:
+        out["total"] += 1
+        loaded = by_path.get(p)
+        if loaded is not None:
+            out["loaded"] += 1
+            missing = [k for k in ("retrieval_anchor", "task_query")
+                       if not loaded.get(k)]
+            if missing:
+                out["weak_hay"].append({
+                    "path": p,
+                    "reason": "缺 %s（在库里但 _hay 只剩 name+description，"
+                              "几乎与任何查询零相交）" % "/".join(missing),
+                })
+            continue
+        reason = None
+        try:
+            with open(p, encoding="utf-8") as f:
+                text = f.read()
+        except Exception as e:
+            out["unreachable"].append({"path": p, "reason": "读不出来: %r" % e})
+            continue
+        if not text.startswith("---"):
+            reason = "没有 frontmatter（整篇都是正文）"
+        else:
+            end = text.find("\n---", 3)
+            if end < 0:
+                reason = "frontmatter 未闭合"
+            else:
+                try:
+                    front = json.loads(text[3:end].strip())
+                except Exception:
+                    reason = "frontmatter 不是合法 JSON"
+                else:
+                    if front.get("state") not in ACTIVE_STATES:
+                        reason = "state=%r 不在 ACTIVE_STATES（旧卡手写缺这个字段）" % (
+                            front.get("state"),)
+                    else:
+                        try:
+                            if int(front.get("counter", 1) or 0) <= 0:
+                                reason = "counter≤0（ExpeL 移出书）"
+                        except Exception:
+                            pass
+        out["unreachable"].append({"path": p, "reason": reason or "未知（load_catalog 跳过）"})
+    return out
+
+
 def _hay(front: dict) -> str:
     return " ".join([front.get("retrieval_anchor", ""), front.get("task_query", ""),
                      front.get("name", ""), front.get("tool_key", ""),

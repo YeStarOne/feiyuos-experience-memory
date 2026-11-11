@@ -49,6 +49,10 @@ def main(argv=None):
     op.add_argument("--cards", required=True, help="卡目录（~/.dsh/skills）")
     op.add_argument("--actions", required=True, help="replay 产物 actions.jsonl")
     op.add_argument("--episodes", required=True, help="replay 产物 episodes.jsonl")
+    up = sub.add_parser("audit",
+                        help="卡库可召回审计：哪些卡永远进不了检索（静默盲区）")
+    up.add_argument("--skills", default=None,
+                    help="卡目录（默认 EXPMEM_SKILLS_DIR 或 ~/.dsh/skills）")
     tp = sub.add_parser("settle", help="ACE 自动打标结算（幂等：已结算回合跳过）")
     tp.add_argument("root", help="~/.dsh/sessions/<workspace> 目录")
     tp.add_argument("--out", required=True, help="replay 产物目录（幂等复用）")
@@ -81,6 +85,20 @@ def main(argv=None):
     elif args.cmd == "orphan":
         from .orphan import audit_dirs
         _print(audit_dirs(args.cards, args.actions, args.episodes))
+    elif args.cmd == "audit":
+        from .retrieve import audit_unreachable
+        rep = audit_unreachable(args.skills or api._skills_dir())
+        _print({"total": rep["total"], "loaded": rep["loaded"],
+                "unreachable": len(rep["unreachable"]),
+                "weak_hay": len(rep["weak_hay"])})
+        for row in rep["unreachable"]:
+            print("  [进不了库] %s\n    ← %s" % (
+                os.path.basename(os.path.dirname(row["path"])), row["reason"]))
+        for row in rep["weak_hay"]:
+            print("  [在库但召回不了] %s\n    ← %s" % (
+                os.path.basename(os.path.dirname(row["path"])), row["reason"]))
+        # 有卡进不去就非零退出，方便挂进定时任务当闸（盲区=看得见）
+        return 1 if (rep["unreachable"] or rep["weak_hay"]) else 0
     elif args.cmd == "settle":
         actions, episodes = _load_replay(args.root, args.out)
         # cmb-P1②：shown-set 从会话日志的 <available_skills> 块派生——
@@ -132,4 +150,7 @@ def _apply_specs(specs, skills_dir) -> int:
 
 
 if __name__ == "__main__":
-    main()
+    # sys.exit(main())：`audit` 靠退出码当闸（有卡进不去就非零），
+    # 直接调 main() 会把那个 return 值丢掉 = 闸恒 0 = 假绿。
+    import sys
+    sys.exit(main())
