@@ -285,10 +285,13 @@ class TestPendingPolicy(unittest.TestCase):
         # 11-12 夜真库反事实实锤：8 张卡的默认 task_query 全含「这张卡」，
         # 聊天回合「把这张图发给小主人」曾命中全部卡。真库量级(≥7)下
         # 通用 token 必须剥掉；剥完空的不进 refs 也不进 dropped_weak。
+        # 11-13 深夜：证据面收成 anchor+标识符后，模板词必须放进 **anchor**
+        # 才测得到 df 剥离（留在 task_query 里现在连证据都不是，测的就成了
+        # 字段边界而不是 df_cap）。
         cat = self._cat([
             {"name": "card-%d" % i, "description": "星露谷 工具%d" % i,
              "state": "candidate", "tool_key": "stardew.t%d" % i,
-             "retrieval_anchor": "tool%d zig%d" % (i, i),
+             "retrieval_anchor": "tool%d zig%d 这张卡" % (i, i),
              "task_query": "对 stardew.t%d 的结果负责时先查这张卡" % i}
             for i in range(8)
         ])
@@ -345,12 +348,14 @@ class TestPendingPolicy(unittest.TestCase):
         # 小语料（<7 张）cap>N 等于不剥——夹具/小目录向后兼容。
         # 查询给「这张卡」而不是「这张」：min_multi=2 下单个词只算一条证据，
         # 这里要测的是「没被当模板词剥掉」，不是闸的宽度。
+        # 11-13 深夜：「这张卡」从 task_query 挪进 anchor——证据面现在只认
+        # anchor+标识符，模板词留在叙述句里就测不到 df 剥离了。
         cat = self._cat([
             {"name": "a", "description": "甲", "state": "candidate",
-             "tool_key": "stardew.a", "retrieval_anchor": "alpha 这张",
+             "tool_key": "stardew.a", "retrieval_anchor": "alpha 这张卡",
              "task_query": "先查这张卡"},
             {"name": "b", "description": "乙", "state": "candidate",
-             "tool_key": "stardew.b", "retrieval_anchor": "beta 这张",
+             "tool_key": "stardew.b", "retrieval_anchor": "beta 这张卡",
              "task_query": "先查这张卡"},
         ])
         r = retrieve.retrieve_skills("这张卡", cat)
@@ -359,10 +364,12 @@ class TestPendingPolicy(unittest.TestCase):
     def test_slash_split_hygiene_and_recall(self):
         # 11-12 夜真库实锤：'/' 不切 → 卡里 warp/move/face 斜杠连体与查询里
         # 图片路径 [图片:/home/...] 产出 'e/''nt''t/' 碎片乱匹配（sd-act 噪声）
+        # 11-13 深夜：斜杠连体搬进 anchor（证据面只认 anchor+标识符）。
         cat = self._cat(
             [{"name": "sd-act", "description": "星露谷 act", "state": "candidate",
-              "tool_key": "stardew.act", "retrieval_anchor": "act",
-              "task_query": "发一个改状态的动作（warp/move/face/use/select/interact）"}]
+              "tool_key": "stardew.act",
+              "retrieval_anchor": "act warp/move/face/use/select/interact",
+              "task_query": "发一个改状态的动作"}]
             + [{"name": "card-%d" % i, "description": "星露谷 工具%d" % i,
                 "state": "candidate", "tool_key": "stardew.t%d" % i,
                 "retrieval_anchor": "tool%d zig%d" % (i, i),
@@ -580,6 +587,99 @@ class TestFunctionWordStripping(unittest.TestCase):
                              "纯虚 bigram 又当上证据了：%r" % got["refs"])
         finally:
             shutil.rmtree(d, ignore_errors=True)
+
+
+class TestEvidenceFieldBoundary(unittest.TestCase):
+    """证据面 = anchor + 标识符；叙述句（task_query/description）只进排序。
+
+    11-13 深夜真库实测（34 动作 / 757 纯聊天 / 22 标注）：
+        证据面=全字段  动作 3/34=8.8%  噪声 57/757=7.5%  ⇒ 判别力 +1.3pp
+        证据面=anchor  动作 4/34=11.8% 噪声 42/757=5.5%  ⇒ 判别力 +6.2pp
+    反向对照（把 _evidence_hay 改回 _hay）精确回到 3/34 · 57/757 ⇒ 真因确认。
+    噪声靠的 token 大半只出现在 task_query 的叙述句里（自己/之前/完成/一步/确认）。
+    """
+
+    def _cat(self, fronts):
+        import tempfile, os, shutil
+        from expmem import retrieve as R
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        for front in fronts:
+            p = os.path.join(d, front["name"], "SKILL.md")
+            os.makedirs(os.path.dirname(p))
+            with open(p, "w", encoding="utf-8") as f:
+                f.write('---\n%s\n---\n\n# x\n' % json.dumps(front, ensure_ascii=False))
+        return R.load_catalog(d)
+
+    def test_prose_in_task_query_is_not_evidence(self):
+        # 卡只把「自己/之前/完成」这类叙述词写在 task_query 里 ⇒ 聊天句不许靠它过闸
+        from expmem import retrieve as R
+        cat = self._cat([{
+            "name": "probe", "state": "candidate", "tool_key": "sd.state",
+            "retrieval_anchor": "对账 存仓库 收菜",
+            "task_query": "完成写操作之后自己确认一下，之前的一步也要看",
+            "description": "确认成败再继续",
+        }])
+        for q in ("你现在回复怎么改", "我之前做完了", "自己看看完成了没"):
+            self.assertEqual(R.retrieve_skills(q, cat)["refs"], [], q)
+        # 真锚词照旧召回（两个多字证据，min_multi=2）
+        self.assertEqual([x["name"] for x in
+                          R.retrieve_skills("对账 收菜", cat)["refs"]], ["probe"])
+
+    def test_identifier_still_enters_evidence(self):
+        # 标识符（卡名/工具键）不是散文，`probe after` 这类查询只能从卡名进来
+        from expmem import retrieve as R
+        cat = self._cat([{
+            "name": "stardew-probe-after-action", "state": "candidate",
+            "tool_key": "stardew.state",
+            "retrieval_anchor": "对账 存仓库",
+            "task_query": "完成之后确认",
+        }])
+        self.assertEqual([x["name"] for x in
+                          R.retrieve_skills("probe after", cat)["refs"]],
+                         ["stardew-probe-after-action"])
+
+    def test_sorting_still_sees_prose(self):
+        # 剥的是「能不能当证据」，不是「还参不参与排序」：when 仍取自 task_query
+        from expmem import retrieve as R
+        cat = self._cat([{
+            "name": "sd-buy", "state": "candidate", "tool_key": "sd.buy",
+            "retrieval_anchor": "价格 扣钱",
+            "task_query": "买东西必带价格",
+        }])
+        r = R.retrieve_skills("价格 扣钱", cat)
+        self.assertEqual(len(r["refs"]), 1)
+        self.assertIn("价格", r["refs"][0]["when"])   # 目录行那句仍来自叙述句
+
+
+class TestCrossWordFragments(unittest.TestCase):
+    """跨词碎片诊断：区分「滑窗造的假词」与「词表缺词」。
+
+    「鱼鱼该浇水了吧」→ 该|浇水 分属两段且浇水是多字词 ⇒ 「该浇」是碎片；
+    「鱼鱼钓鱼吗」→ 词表只有「钓鱼开关」，两字都落单字段 ⇒ 不是碎片，
+    那是**词表缺口**（卡里没写这个词），不是滑窗造的。
+    """
+
+    def test_fragment_detected_when_segments_disagree(self):
+        from expmem.retrieve import cross_word_fragments
+        lex = {"浇水", "收菜", "钓鱼开关"}
+        got = cross_word_fragments("鱼鱼该浇水了吧", lex)
+        self.assertIn("该浇", got)          # 该=单字段，浇∈「浇水」⇒ 碎片
+
+    def test_vocabulary_gap_is_not_a_fragment(self):
+        from expmem.retrieve import cross_word_fragments
+        lex = {"浇水", "收菜", "钓鱼开关"}
+        got = cross_word_fragments("鱼鱼钓鱼吗", lex)
+        self.assertNotIn("钓鱼", got)       # 词表缺词 ≠ 滑窗造假
+
+    def test_known_words_never_fragments(self):
+        # 她的名字不在卡锚里（卡不写自己名字），但它是完整词不是碎片
+        from expmem.retrieve import cross_word_fragments
+        lex = {"浇水", "收菜"}
+        for q in ("鱼鱼浇水了吗", "肥鱼收菜了吗", "主持浇水了"):
+            got = cross_word_fragments(q, lex)
+            for name in ("鱼鱼", "肥鱼", "主持"):
+                self.assertNotIn(name, got, "%s 被误报成碎片" % name)
 
 
 if __name__ == "__main__":

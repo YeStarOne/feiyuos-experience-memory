@@ -77,6 +77,15 @@ _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 # 实词 bigram（浇水/钓鱼/对账/菜熟了）必须存活——已逐条验证零误伤。
 STOPCHARS = frozenset("的了吗呢是我你他这那不有在就都也还一下个什么吧呀哈么")
 
+# 她的名字/团队称呼——诊断「跨词碎片」时这些一律算已知词。
+# 起因：碎片诊断的词表取自卡锚，而卡里永远不写「鱼鱼」（卡是给她的操作手册，
+# 不会自称名字）⇒「鱼鱼该浇水了吧」里的「鱼鱼」会被误报成碎片。它不是碎片，
+# 它是一个完整的名字。注意「主持」在本库 8 卡里真的没出现，所以它在诊断报告
+# 里仍会被报——那是**真事实**（卡里没这个词），不是误报。
+_KNOWN_WORDS = frozenset((
+    "鱼鱼", "肥鱼", "小肥鱼", "主持", "主人", "星露谷", "我的世界",
+))
+
 
 def estimate_tokens(s: str) -> int:
     """粗估：CJK/全角 ≈1.5 token/字（cmb 实测口径），ASCII ≈0.3 token/字符。"""
@@ -230,20 +239,47 @@ def audit_unreachable(skills_dir: str) -> dict:
 
 
 def _hay(front: dict) -> str:
+    """**排序面**：全字段。confidence/state bonus 之外的相似度都用它。"""
     return " ".join([front.get("retrieval_anchor", ""), front.get("task_query", ""),
                      front.get("name", ""), front.get("tool_key", ""),
                      front.get("description", "")])
+
+
+def _evidence_hay(front: dict) -> str:
+    """**证据面**：`retrieval_anchor` + 标识符（name / tool_key）。叙述句不算证据。
+
+    11-12 深夜拆分，真库 8 卡实测（34 动作 / 757 纯聊天 / 22 标注）：
+
+        证据面=全字段  动作召回 3/34=8.8%  噪声 57/757=7.5%  ⇒ 判别力 +1.3pp
+        证据面=anchor  动作召回 4/34=11.8% 噪声 42/757=5.5%  ⇒ 判别力 +6.2pp
+
+    两个方向同时变好，且没加任何黑名单——这是结构性修法。原因在数据里：
+    噪声靠的 token 大半只出现在 `task_query` 的**叙述句**里
+    （自己/之前/完成/一步/确认/只读），而 anchor 是人按词挑的。
+
+    为什么带上 name/tool_key：真库上它们与 anchor 重合，加上去**一位数都不变**
+    （4/34 · 42/757），所以那轮测不出区别；但它们是**标识符**不是散文，
+    `probe after` 这类查询只能从卡名进来（`test_compound_token_split` 就是
+    靠这个入口，剥掉 name 会让它退化成 0）。判据是「标识符 vs 散文」，
+    不是「anchor vs 其它」——散文（task_query / description）只进排序。
+
+    ⚠️ 别把 task_query 完全废掉：它是 `when`（注入目录行里给她看的那句话）
+    的唯一来源，也参与排序。这里剥的只是「它能不能当**过闸证据**」。
+    """
+    return " ".join([front.get("retrieval_anchor", ""), front.get("name", ""),
+                     front.get("tool_key", "")])
 
 
 def _evidence(q_tokens: set, front: dict, domain=None):
     """闸与排序分家（cmb 验收口径）：本函数只算**命中证据**，不掺 confidence/state。
 
     返回 (hit, matched)。跨域默认过滤→hit=0（显式点名时由调用方换 domain 参数）。
+    证据只从 `_evidence_hay` 取（见那里的实测：全字段进闸等于把卡正文措辞当证据）。
     """
     d = front.get("domain")
     if domain and d and d != domain:
         return 0, set()
-    matched = q_tokens & _tokens(_hay(front))
+    matched = q_tokens & _tokens(_evidence_hay(front))
     return len(matched), matched
 
 
@@ -259,19 +295,159 @@ def _df_cap(n: int) -> int:
     同样塞 12 张随机噪声卡：判别力与槽位**一位数都不变**（噪声卡 df=1 < 5，
     照旧当证据，但它们与任何查询都不相交，所以零命中）。
 
-    5 的来源：现网 8 卡实测（长度分层判别力 +21.3pp）与缩放版完全一致，
-    是「不改变现网行为」的那个值；固定 3/4 会剥掉真证据（+20.0/+20.7pp），
-    固定 8 略松（+22.8pp 但 51-100 字桶更差）。"""
+    5 的来源：现网 8 卡实测与缩放版完全一致，是「不改变现网行为」的那个值；
+    固定 3/4 会剥掉真证据，固定 8 略松（但 51-100 字桶更差）。
+
+    ⚠️ 11-12 深夜口径更正：上面那些 pp 数（+21.3pp 等）都含 RN 团队信污染，
+    诚实值见 LIMITS["min_multi_hits"] 的注释。**但这个函数的结论不受影响**
+    ——它是用「零假设对照」（塞随机噪声卡，看判别力动不动）证明的，那条
+    对照与 RN 污染无关。"""
     return max(4, min(5, max(n, 1)))
 
 
+def cross_word_fragments(q: str, lexicon) -> list:
+    """查询里哪些命中是**跨词边界的碎片**——不是词，是滑窗的副产品。
+
+    「鱼鱼该浇水了吧」→ 鱼鱼|该|浇水|了|吧，滑窗造出「鱼该」「该浇」「水了」
+    「了吧」四个跨词垃圾，其中「该浇」撞上卡里写的「该浇多少」⇒ 假过闸；
+    而「鱼鱼浇水了吗」只造「鱼浇」「水了」，撞不上 ⇒ **真需求反被拒**。
+    换句话说：过闸靠的是偶然碎片，不是语义。
+
+    量化（757 条纯聊天 / 她 29 条带动作指令 / 16 条留出问句）：
+        滑窗 tokenizer        mm=2 → 召回 3/6  噪声 11.6%
+        剥掉跨词碎片           mm=2 → 召回 0/6  噪声  1.3%
+    ⇒ **现有召回 3 条里 3 条全是碎片撑起来的**。这不是"优化没做好"，是
+    "这个指标一直在被自己的 bug 喂分"。
+
+    本函数只做诊断、不改检索行为（改 tokenizer 会一次性打掉所有召回，
+    必须与卡锚重写同批上）。调用方拿它出审计报告：哪些卡是靠碎片进目录的。
+
+    **判据（只认「切分矛盾」，不认「词表缺口」）**：用词表对查询做最长匹配切分，
+    一个 bigram 被判为碎片，当且仅当它某次出现里两字**分属不同段**，
+    且其中至少一段是**词表命中的多字词**。
+
+      「该浇」：该=单字段，浇∈「浇水」多字段 ⇒ 碎片（查询切分亲口说这两字不同词）
+      「钓鱼」：词表只有「钓鱼开关」没有「钓鱼」⇒ 两字都落单字段 ⇒ **不算碎片**
+                （那是词表缺口，卡里没写这个词，不是滑窗造出来的）
+
+    ⚠️ 这条区分是踩了两次坑才定下来的。前两版都错：
+      ① 裸子串判定：卡写「该浇多少」时「该浇」是它的子串 ⇒ 真碎片被放行，诊断器全绿；
+      ② 锚词边界判定：`_hay` 用空格拼词，**每个词首都像边缘** ⇒ 判据退化成恒真。
+    根因是「边缘/子串」都只看卡那一侧；真正的信号在**查询那一侧的切分**。
+
+    参数：
+      lexicon = 中文词表。建议直接用卡库 anchor+task_query 的整词——人写锚
+                时就是按词写的，所以它天然是分词结果，零依赖、零维护。
+                词表缺词只会让碎片**漏报**（更保守），不会误报。
+
+    返回碎片列表（字符串）。
+
+    词表补充：她自己的称呼（鱼鱼/肥鱼/主持/小肥鱼…）一律算已知词——
+    它们是名字不是跨词碎片，词表来自卡锚时必然漏掉它们（卡里不写自己名字）。
+    """
+    lex = {w for w in lexicon if len(w) >= 2
+           and all("\u4e00" <= c <= "\u9fff" for c in w)}
+    lex |= {w for w in _KNOWN_WORDS
+            if all("\u4e00" <= c <= "\u9fff" for c in w)}
+    if not lex:
+        return []
+    maxl = max(len(w) for w in lex)
+    owner, i = {}, 0
+    while i < len(q):
+        for L in range(min(maxl, len(q) - i), 0, -1):
+            w = q[i:i + L]
+            if L == 1 or w in lex:
+                for k in range(i, i + L):
+                    owner[k] = (i, i + L)
+                i += L
+                break
+        else:
+            i += 1
+    out = []
+    for t in sorted(_tokens(q)):
+        if not (len(t) == 2 and all("\u4e00" <= c <= "\u9fff" for c in t)):
+            continue
+        if t in lex:
+            continue          # 词表里的词本身就是词，永远不会是碎片
+        pos = [k for k in range(len(q) - 1) if q[k:k + 2] == t]
+        hit = False
+        for k in pos:
+            a, b = owner.get(k), owner.get(k + 1)
+            if a is None or b is None or a == b:
+                continue
+            # 至少一段是词表命中的多字词 ⇒ 查询切分明确说这两字不同词
+            if (a[1] - a[0]) >= 2 or (b[1] - b[0]) >= 2:
+                hit = True
+                break
+        if hit:
+            out.append(t)
+    return out
+
+
+def audit_fragment_evidence(catalog, queries) -> dict:
+    """审计：给定一批查询，哪些**过闸的卡**其实是靠跨词碎片进的目录。
+
+    返回 {"queries": n, "recalled": n, "fragment_only": [{query, card, frags}],
+    "clean": n}。fragment_only 非空 = 那几条召回不可信，指标被碎片喂分了。
+    lexicon 取自 catalog 自己的锚词（见 cross_word_fragments）。
+    """
+    lex = set()
+    for f in catalog:
+        blob = (f.get("retrieval_anchor", "") + " "
+                + f.get("task_query", ""))
+        for t in blob.split():
+            if len(t) >= 2 and all("\u4e00" <= c <= "\u9fff" for c in t):
+                lex.add(t)
+    # 与生产路径同一把尺子：df 剥离后的 real 才是过闸真正吃到的证据
+    df = _df_map(catalog)
+    df_cap = _df_cap(len(catalog))
+    rep = {"queries": 0, "recalled": 0, "clean": 0, "fragment_only": []}
+    for q in queries:
+        rep["queries"] += 1
+        res = retrieve_skills(q, catalog)
+        if not res["refs"]:
+            continue
+        rep["recalled"] += 1
+        frags = set(cross_word_fragments(q, lex))
+        if not frags:
+            rep["clean"] += 1
+            continue
+        # 逐卡看：这张卡过闸用的多字命中里，有几个是碎片
+        q_tokens = _tokens(q)
+        bad = []
+        for r in res["refs"]:
+            f = next((c for c in catalog if c.get("name") == r["name"]), None)
+            if f is None:
+                continue
+            matched = q_tokens & _tokens(_evidence_hay(f))
+            multi = [t for t in matched if len(t) >= 2
+                     and df.get(t, 0) < df_cap]      # 剥掉模板词，同 retrieve_skills
+            junk = [t for t in multi if t in frags]
+            real = [t for t in multi if t not in frags]
+            # 判据不是"碎片占多数"，而是**剥掉碎片后还过不过得了闸**：
+            # 过闸要 min_multi_hits 条多字命中，剩不到就是这张卡靠碎片进的目录。
+            if junk and len(real) < LIMITS["min_multi_hits"]:
+                bad.append({"card": r["name"], "fragments": sorted(junk),
+                            "real": sorted(real)})
+        if bad:
+            rep["fragment_only"].append({"query": q, "cards": bad})
+        else:
+            rep["clean"] += 1      # 有碎片但剥掉后仍过闸 ⇒ 这条召回是真材实料
+    return rep
+
+
 def _df_map(catalog) -> dict:
-    """token → 出现在几张卡的 hay 里（机械闸先跑真产物命中数教训的产物：
+    """token → 出现在几张卡的**证据面**里（机械闸先跑真产物命中数教训的产物：
     真库 8 卡全含「这张卡」，任何带「这张」的聊天回合能命中全部卡再靠
-    confidence 瞎选——手工黑名单追不完模板词，语料自己会招供）。"""
+    confidence 瞎选——手工黑名单追不完模板词，语料自己会招供）。
+
+    11-12 深夜起按 `_evidence_hay` 算（不是 `_hay`）：df 的用途是判断
+    「这个 token 有没有鉴别力」，而它只在**证据面**上参与过闸，排序面多宽都
+    不影响闸。按全字段算会把只存在于叙述句里的词算进 df，反而放松了剥离。
+    """
     df = {}
     for f in catalog:
-        for t in _tokens(_hay(f)):
+        for t in _tokens(_evidence_hay(f)):
             df[t] = df.get(t, 0) + 1
     return df
 
