@@ -262,7 +262,7 @@ def derive_manifest(root: str) -> dict:
     return manifest
 
 
-def record_skill_feedback(fb, shown_ids=()) -> dict:
+def record_skill_feedback(fb, shown_ids=(), manual_review=False) -> dict:
     """真身（S2 收尾）：对 ~/.dsh/skills/<name>/SKILL.md 落 ExpeL 台账。
     A-MEM 三守卫在 feedback.record_feedback 里（shown_ids=本轮展示过的卡名）。
     只动台账不动正文——不触发 SkillWeaver 清零。返回 {"applied", "reason", "front"}。"""
@@ -273,13 +273,25 @@ def record_skill_feedback(fb, shown_ids=()) -> dict:
         name = (_fb.parse_feedback(fb) or {}).get("name", "")
     except ValueError as e:
         return {"applied": False, "reason": "parse_rejected: %s" % e, "front": None}
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", name or ""):
+        return {"applied": False, "reason": "invalid_name: %r" % (name,),
+                "front": None}   # 卡名白名单：路径穿越进不来（评审 11-12 P2）
     path = os.path.join(_skills_dir(), name, "SKILL.md")
     if not os.path.exists(path):
         return {"applied": False, "reason": "card_not_found: %s" % name, "front": None}
-    front, body = load_skill(path)
-    new_front, applied, reason = _fb.record_feedback(front, fb, shown_ids=shown_ids)
-    if applied:
-        save_skill(path, new_front, body)   # 正文原样；save_skill 再过一次正文闸
+    if not shown_ids and not manual_review:
+        # 空展示上下文必须显式二选一（评审 11-12 P2）：静默放行=模型没见过
+        # 卡的反馈也记账
+        return {"applied": False,
+                "reason": "no_shown_context: 传 shown_ids 或 manual_review=True",
+                "front": None}
+    from .skills import card_lock
+    with card_lock(_skills_dir(), name):    # 读旧卡→改→写全程持锁（评审 P1-4）
+        front, body = load_skill(path)
+        new_front, applied, reason = _fb.record_feedback(front, fb,
+                                                         shown_ids=shown_ids)
+        if applied:
+            save_skill(path, new_front, body)   # 正文原样；save_skill 再过一次正文闸
     return {"applied": applied, "reason": reason, "front": new_front}
 
 
@@ -292,6 +304,18 @@ SETTLE_VERDICT_V = 2
 
 def settle_auto_marks(episodes, actions=None, skills_dir: str = None,
                       extra_manifest=None) -> dict:
+    # 并发闸（评审 11-12 P1-4）：全程持 .settled.lock——两进程同时 settle
+    # 同一回合只结一次；串行幂等语义不变（.settled.jsonl 防重放仍有效）。
+    # 实现体挪到 _settle_locked，签名/返回不变。
+    sdir = skills_dir or _skills_dir()
+    os.makedirs(sdir, exist_ok=True)
+    from .skills import file_lock
+    with file_lock(os.path.join(sdir, ".settled.lock")):
+        return _settle_locked(episodes, actions, sdir, extra_manifest)
+
+
+def _settle_locked(episodes, actions=None, sdir=None,
+                   extra_manifest=None) -> dict:
     """ACE 自动打标的唯一接线（intel 复审 #1 的落点）：逐个成功回合，
     used = 该 (session, turn) 注入清单里的卡名 ∩ **组内全部集真实执行过的
     tool_key 并集**（intel 复审 B：只按「递过」打标=回声室；cmb-P1：判单
@@ -307,8 +331,7 @@ def settle_auto_marks(episodes, actions=None, skills_dir: str = None,
           "reasons": {"verdict:*"/"no_injected"/"complete": n}}。"""
     from . import feedback as _fb
     from .consolidate import _tool_key
-    from .skills import load_skill, save_skill
-    sdir = skills_dir or _skills_dir()
+    from .skills import load_skill, save_skill, card_lock
     settled_path = os.path.join(sdir, ".settled.jsonl")
     settled = set()
     try:
@@ -409,27 +432,28 @@ def settle_auto_marks(episodes, actions=None, skills_dir: str = None,
                 skipped += 1
                 complete = False   # 目录在而 SKILL.md 缺：真损，可重试
                 continue
-            front, body = load_skill(path)
-            # cmb-P2-residual（S4 必带）：按卡幂等——这张卡这个回合标过就跳过
-            # （半截卡拖住回合结清 → 重试时好卡不许再 +1）
-            skey_str = "%s|%s" % skey
-            if skey_str in (front.get("auto_marks") or []):
-                continue
-            card_key = front.get("tool_key") or ""
-            used = bool(card_key) and card_key in used_keys   # 「用了」≠「递了」
-            new_front, applied, _ = _fb.auto_from_episode(front, "success",
-                                                          used=used,
-                                                          auto_key=skey_str)
-            if applied:
-                try:
-                    save_skill(path, new_front, body)
-                except OSError:
-                    skipped += 1
-                    complete = False          # 落盘失败：不写 settled，可重试
+            with card_lock(sdir, name):       # 单卡读改写全程持锁（评审 P1-4）
+                front, body = load_skill(path)
+                # cmb-P2-residual（S4 必带）：按卡幂等——这张卡这个回合标过就跳过
+                # （半截卡拖住回合结清 → 重试时好卡不许再 +1）
+                skey_str = "%s|%s" % skey
+                if skey_str in (front.get("auto_marks") or []):
                     continue
-                marked[name] = marked.get(name, 0) + 1
-            else:
-                skipped += 1                  # not_used 等终局判定：算结清
+                card_key = front.get("tool_key") or ""
+                used = bool(card_key) and card_key in used_keys   # 「用了」≠「递了」
+                new_front, applied, _ = _fb.auto_from_episode(front, "success",
+                                                              used=used,
+                                                              auto_key=skey_str)
+                if applied:
+                    try:
+                        save_skill(path, new_front, body)
+                    except OSError:
+                        skipped += 1
+                        complete = False          # 落盘失败：不写 settled，可重试
+                        continue
+                    marked[name] = marked.get(name, 0) + 1
+                else:
+                    skipped += 1                  # not_used 等终局判定：算结清
         if complete:
             reasons["complete"] = reasons.get("complete", 0) + 1
             new_settled.append(skey + ("complete",))

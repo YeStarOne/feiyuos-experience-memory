@@ -44,8 +44,9 @@ def parse_feedback(raw) -> dict:
         verdict = raw.get("verdict")
         if verdict not in ("success", "failure"):
             raise ValueError("strong 反馈必须带 verdict=success|failure")
-        if not raw.get("executed"):
-            raise ValueError("strong 反馈必须 executed=true（执行过才算 strong）")
+        if raw.get("executed") is not True:
+            raise ValueError("strong 反馈必须 executed=true（严格布尔：\"false\"/1/"
+                             "1.0 一律不收——评审 11-12 P2）")
         fb["verdict"] = verdict
         fb["executed"] = True
     for k in LIST_FIELDS:

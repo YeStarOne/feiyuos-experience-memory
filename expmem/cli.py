@@ -35,7 +35,9 @@ def main(argv=None):
     fp.add_argument("--verdict", default=None, choices=("success", "failure"))
     fp.add_argument("--executed", action="store_true")
     fp.add_argument("--shown", default="",
-                    help="本轮展示过的卡名，逗号分隔；空=人工无上下文（守卫①放行）")
+                    help="本轮展示过的卡名，逗号分隔")
+    fp.add_argument("--manual-review", action="store_true",
+                    help="显式声明人工审核通道（无本轮展示上下文时必须二选一）")
     ip = sub.add_parser("induct", help="AWM 整份重写归纳 → specs/confirmations")
     ip.add_argument("root", help="~/.dsh/sessions/<workspace> 目录")
     ip.add_argument("--out", required=True, help="specs 输出目录")
@@ -64,7 +66,8 @@ def main(argv=None):
         if args.executed:
             fb["executed"] = True
         shown = tuple(s.strip() for s in args.shown.split(",") if s.strip())
-        _print(api.record_skill_feedback(fb, shown_ids=shown))
+        _print(api.record_skill_feedback(fb, shown_ids=shown,
+                                         manual_review=args.manual_review))
     elif args.cmd == "induct":
         actions, episodes = _load_replay(args.root, args.out)
         from .retrieve import load_catalog

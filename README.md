@@ -4,6 +4,15 @@
 memory-hub / auto-memory / 手册§8 / shared-memory.md（知识层），两层用 evidence
 互相点，不互相复述。
 
+## 当前边界：Stardew-first（2026-11-12 评审明确）
+
+现在真正跑通的经验链只有 **dsh 会话日志 → bash → sd 命令 → 星露谷动作** 这一条。
+`adapters/tool_generic.py`、`adapters/minecraft.py`、`sources/live_tap.py` 尚未实现，
+`api.record_action()` / `commit_episode()` 仍是 `NotImplementedError`——本仓
+口径是「星露谷离线经验提炼 + 原生 Skill 卡消费」，不是「所有工具/游戏通用」。
+通用化按 Action/Episode 协议走 **Adapter + Outcome Evaluator** 两个扩展点，
+不为每个游戏另起一套技能记忆（见 docs/00-plan.md）。
+
 ## 她昨晚怎么用它（真实例子，2026-11-11 凌晨）
 
 **1. 02:44 — 三张卡悄悄进了技能架。**

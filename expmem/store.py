@@ -33,6 +33,9 @@ class AppendOnly:
             return False
         self._fh.write(json.dumps(row, ensure_ascii=False, sort_keys=True,
                                   separators=(",", ":")) + "\n")
+        # 崩溃安全兑现（评审 11-12 P2）：显式刷盘，进程退出/断电不丢已 append 行
+        self._fh.flush()
+        os.fsync(self._fh.fileno())
         self._seen.add(rid)
         self._n += 1
         return True

@@ -67,7 +67,7 @@ class TestScanSuccess(unittest.TestCase):
     """成功轨：机械可验证效果（outcome 三条失败规则的干净反演）。"""
 
     def test_store_nonempty_is_success_evidence(self):
-        ep = {"episode_id": "ep_ok", "verdict": "unknown", "probe_status": "ok",
+        ep = {"episode_id": "ep_ok", "verdict": "success", "probe_status": "ok",
               "actions": ["a1"], "game_day": "冬25"}
         act = dict(ACT_STORE, id="a1",
                    out_head='{"ok": true, "stored": [{"id":"Cranberries","count":3}]}')
@@ -82,7 +82,7 @@ class TestScanSuccess(unittest.TestCase):
         self.assertEqual(rows, [])
 
     def test_harvest_count_positive(self):
-        ep = {"episode_id": "ep_h", "verdict": "unknown", "actions": ["a2"]}
+        ep = {"episode_id": "ep_h", "verdict": "success", "actions": ["a2"]}
         act = {"id": "a2", "verb": "", "raw_path": "/interact",
                "segment": "sd raw /interact", "out_head": "收菜完成 12 件"}
         rows = scan_success([ep], [act])
@@ -152,7 +152,7 @@ class TestInductSpecs(unittest.TestCase):
     def test_full_file_induction_with_both_tracks(self):
         eps, acts = self._three_failures()
         # 再给一条成功轨证据（同 tool_key）
-        eps.append({"episode_id": "ep_ok", "verdict": "unknown", "probe_status": "ok",
+        eps.append({"episode_id": "ep_ok", "verdict": "success", "probe_status": "ok",
                     "actions": ["a9"], "game_day": "冬28"})
         acts.append({"id": "a9", "verb": "raw", "raw_path": "/store",
                      "segment": 'sd raw /store {"id":"Parsnips"}',

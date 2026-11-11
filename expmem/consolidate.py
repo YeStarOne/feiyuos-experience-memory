@@ -138,7 +138,42 @@ MIN_SPEC_EVIDENCE = 3
 _WRITE_VERBS = WRITE_VERBS
 
 
-def scan_success(episodes, actions):
+def _success_rule(verb, raw_path, txt):
+    """store 存进/收到/买对 三信号的机械匹配（主扫描与段级再归因共用）。"""
+    if STORED_NONEMPTY_RE.search(txt):
+        return "stored_nonempty"
+    m = HARVEST_COUNT_RE.search(txt)
+    if m and int(m.group(1)) >= 1:
+        return "harvest_count_%s" % m.group(1)
+    if verb == "buy" or raw_path == "/buy":
+        mc = _BUY_CHARGE_RE.search(txt)
+        if mc:
+            return "buy_charged_%s" % mc.group(1)
+    return ""
+
+
+def _split_json_objects(txt):
+    """按顺序切顶层 JSON 对象（sd 桥每命令一段 JSON，段间允许杂散文本）。
+    只认 dict；段数与子动作数对不上时由调用方 parked，不硬凑。"""
+    dec = json.JSONDecoder()
+    segs, i, n = [], 0, len(txt or "")
+    while i < n:
+        while i < n and txt[i] != "{":
+            i += 1
+        if i >= n:
+            break
+        try:
+            obj, j = dec.raw_decode(txt, i)
+        except ValueError:
+            i += 1
+            continue
+        if isinstance(obj, dict):
+            segs.append(txt[i:j])
+        i = j
+    return segs
+
+
+def scan_success(episodes, actions, stats=None):
     """成功轨证据：效果能机械核实才收，宁可空轨不硬凑。
     - store 存进：out 含非空 stored:[…]（stored_empty 的反演）
     - 收到：收/harvest/collect 后跟 ≥1（harvest_zero_with_ready 的反演）
@@ -150,43 +185,71 @@ def scan_success(episodes, actions):
     cand = []           # (session, call_id) -> 首个匹配（含动词信息）
     rows = []
     for e in (episodes or []):
-        if e.get("verdict") == "failure":
-            continue            # 失败集（含 blocked；wrong_arg 仅历史数据）不进成功轨
+        if e.get("verdict") != "success":
+            continue            # 只认 outcome.py 判定的 success（评审 11-12 P1-1）：
+                                # unknown/interrupted 的正向信号同样不进成功轨——
+                                # 单操作的 stored 非空 ≠ 整个任务过成功判经
         for aid in e.get("actions") or []:
             a = act_by_id.get(aid)
             if a is None or not (a.get("out_head") or "").strip():
                 continue
             h = a.get("out_head") or ""
-            rule = ""
-            if STORED_NONEMPTY_RE.search(h):
-                rule = "stored_nonempty"
-            else:
-                m = HARVEST_COUNT_RE.search(h)
-                if m and int(m.group(1)) >= 1:
-                    rule = "harvest_count_%s" % m.group(1)
-                elif (a.get("verb") == "buy" or a.get("raw_path") == "/buy"):
-                    mc = _BUY_CHARGE_RE.search(h)
-                    if mc:
-                        rule = "buy_charged_%s" % mc.group(1)
+            rule = _success_rule(a.get("verb") or "",
+                                 a.get("raw_path") or "", h)
             if rule:
                 rows.append({"episode": e.get("episode_id"), "action": aid,
                              "session": a.get("session") or "",
                              "call_id": a.get("call_id") or "",
                              "sub_idx": a.get("sub_idx", 0),
                              "verb": a.get("verb") or "",
+                             "raw_path": a.get("raw_path") or "",
                              "is_write": (a.get("verb") or "") in _WRITE_VERBS,
                              "cmd": a.get("segment") or "", "out": h,
                              "verdict": "success", "rule": rule,
                              "game_day": e.get("game_day") or ""})
-    # 同 call 归因：有写动作时读动作让位（写动作是效果的制造者）
+    # 同 call 归因（评审 11-12 P1-2）：一段 out_head 属于整条 bash 链，链上每个
+    # 子动作带着同一份文本——不能整段冒充每个子命令各自的证据（stardew-store 卡
+    # 三条 evidence 同一段 Bullhead×39 实锤）。归因阶梯：
+    #   1) call 内命中去重后只剩一个动作 → 归它（原行为）
+    #   2) 多个动作命中 → 按顺序切 JSON 对象段（sd 桥每命令一段 JSON）；
+    #      段数==链上子动作数时按 sub_idx 对号，各动作只认自己段里的信号
+    #   3) 切不动 → 整组不进成功轨，计入 stats["parked_success_rows"]
+    #      （宁可空轨不硬凑；dropped 里留痕，不静默丢）
     by_call = {}
     for r in rows:
         by_call.setdefault((r["session"], r["call_id"]), []).append(r)
+    subs_per_call = {}
+    for a in (actions or []):
+        k = (a.get("session") or "", a.get("call_id") or "")
+        subs_per_call[k] = subs_per_call.get(k, 0) + 1
     out = []
     for group in by_call.values():
         writes = [r for r in group if r["is_write"]]
         keep = writes if writes else group
-        out.extend(keep)
+        if len({r["action"] for r in keep}) == 1:
+            keep[0]["attribution"] = "single"   # 同一动作多集命中=同一份证据
+            out.append(keep[0])
+            continue
+        n_subs = subs_per_call.get((keep[0]["session"], keep[0]["call_id"]), 0)
+        segs = _split_json_objects(keep[0]["out"]) if n_subs else []
+        if len(segs) != n_subs:
+            if stats is not None:
+                stats["parked_success_rows"] = \
+                    stats.get("parked_success_rows", 0) + len(keep)
+            continue
+        for r in keep:
+            seg = segs[r["sub_idx"]] if r["sub_idx"] < len(segs) else ""
+            rule = _success_rule(r["verb"], r.get("raw_path") or "", seg)
+            if not rule:
+                if stats is not None:
+                    stats["parked_success_rows"] = \
+                        stats.get("parked_success_rows", 0) + 1
+                continue
+            r2 = dict(r)
+            r2["out"] = seg
+            r2["rule"] = rule
+            r2["attribution"] = "segment"
+            out.append(r2)
     return out
 
 
@@ -297,7 +360,10 @@ def induct_specs(episodes, actions, existing_fronts=None, now_game_day=""):
         for ev in s["evidence"]:
             fail_rows.append(dict(ev, failure_class=s["failure_class"],
                                   tool_key=s["tool_key"]))
-    ok_rows = scan_success(episodes, actions)
+    _ss = {}
+    ok_rows = scan_success(episodes, actions, stats=_ss)
+    if _ss.get("parked_success_rows"):
+        dropped = list(dropped) + [dict(_ss)]   # parked 留痕可见，不静默丢
     conf_f, pooled_f, fail_fresh = dedupe_add(fail_rows, existing_fronts)
     conf_o, pooled_o, ok_fresh = dedupe_add(ok_rows, existing_fronts)
     confirmed = dict(conf_f)

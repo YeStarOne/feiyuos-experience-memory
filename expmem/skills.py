@@ -158,13 +158,59 @@ def load_skill(path: str):
         return parse_skill(f.read())
 
 
+import contextlib
+
+
+@contextlib.contextmanager
+def file_lock(path):
+    """单机文件锁（评审 11-12 P1-4）：flock 独占；点前缀锁文件不入检索。"""
+    import fcntl
+    os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
+    fh = open(path, "a")
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        yield fh
+    finally:
+        try:
+            fcntl.flock(fh, fcntl.LOCK_UN)
+        finally:
+            fh.close()
+
+
+@contextlib.contextmanager
+def card_lock(skills_dir, name):
+    """按卡锁：覆盖「读旧卡→改→写→记账」全程（评审 11-12 P1-4）。"""
+    with file_lock(os.path.join(skills_dir, name, ".lock")):
+        yield
+
+
 def save_skill(path: str, front: dict, body: str) -> str:
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     lint_body(body)                       # 写盘前过闸（rewrite_card 也过，双保险）
     text = render_skill(front, body)
-    with open(path, "w", encoding="utf-8", newline="\n") as f:
-        f.write(text)
+    # 原子写（评审 11-12 P1-4）：中途退出不留半截卡——
+    # 同目录临时文件 + fsync + os.replace（同盘 rename 原子）
+    import tempfile
+    d = os.path.dirname(os.path.abspath(path)) or "."
+    fd, tmp = tempfile.mkstemp(prefix=".skill.", suffix=".tmp", dir=d)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
     return path
+
+
+# 外部确认主体白名单（评审 11-12 P2）：自由文本不算确认
+_CONFIRM_ACTORS = ("owner",)
 
 
 def transition(front: dict, new_state: str, actor: str) -> dict:
@@ -179,6 +225,9 @@ def transition(front: dict, new_state: str, actor: str) -> dict:
     if new_state in ("observed", "verified") and old != new_state:
         if actor == "machine":
             raise StateError("机器禁止升级（%s→%s 需外部确认）" % (old, new_state))
+        if actor not in _CONFIRM_ACTORS:
+            raise StateError("actor=%r 不是确认主体白名单 %s（自由文本不算外部确认"
+                             "——评审 11-12 P2）" % (actor, _CONFIRM_ACTORS))
         if not is_tested(front):
             raise StateError("test_count=0（改过就没再被真实执行过），不许升级 %s→%s"
                              % (old, new_state))
