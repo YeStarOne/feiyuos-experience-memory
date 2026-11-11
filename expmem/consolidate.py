@@ -342,6 +342,44 @@ _TASK_QUERY = {
     "stardew.store": "存仓库后当场确认 stored 非空",
 }
 
+# 「什么时候用」短语（11-13 凌晨）：**description 是唯一活面**，必须自己说清场景。
+#
+# 为什么加这个：dsh 的 skill 目录只注入 `- \`name\`: description`（源码
+# dsh-tool-skill/lib/index.js:770-776 + dsh-skill-filesystem/lib/index.js:696-706
+# 只保留 name/description/whenToUse/metadata），`retrieval_anchor` 一个字都进不去
+# ——她 72288 行真会话里 anchor 出现 0 次。所以 description 写成
+# `星露谷 buy：失败 0 例 / 成功 3 例`（只有统计、没有场景）时，模型看到的就是
+# 一个没有使用条件的名字，只能靠猜。
+#
+# 纪律：这里只写「动作场景」，不写她的口语说法。口语说法（继续玩/菜熟了）会随
+# 时间漂移，写进卡里就是过拟合——两折交叉验证实测：按训练侧说法改写，折A→验B
+# 召回 0/6 不变、折B→验A 只多 1 条。场景描述是稳的，说法是漂的。
+_WHEN = {
+    "stardew.buy": "买东西前（必带 price，不带按售价×2 扣钱）",
+    "stardew.store": "往仓库/箱子存东西前",
+    "stardew.farm": "浇水/播种/收庄稼/施肥前",
+    "stardew.state": "写动作之后同回合对账时",
+    "stardew.warp": "要移动到别的地图/地点前",
+    "stardew.inv": "要看背包里有什么时",
+    "stardew.sell": "卖货前",
+    "stardew.use": "要用道具/吃东西前",
+}
+
+
+def _description(tool_key: str, n_fail: int, n_ok: int, dom_fc: str) -> str:
+    """产卡 description：**场景在前，统计在后**。
+
+    顺序不能反：dsh 目录行按 description 原文注入（截 500 字），模型先读到的是
+    前半句。把「失败 0 例 / 成功 3 例」放前面，等于把唯一的使用线索埋在统计后面。
+    """
+    when = _WHEN.get(tool_key)
+    stat = "失败 %d 例 / 成功 %d 例%s" % (
+        n_fail, n_ok, ("，主失败形态 %s" % dom_fc) if dom_fc else "")
+    head = "星露谷 %s" % tool_key[len("stardew."):]
+    if when:
+        return "%s：%s。证据 %s" % (head, when, stat)
+    return "%s：%s" % (head, stat)
+
 # 默认 task_query 模板（11-12 夜）：绝不带「先查这张卡」级口语泛词——
 # 模板词进卡=全库检索噪声源（真库反事实实锤：聊天回合靠「这张」打中 buy 卡）
 DEFAULT_TASK_QUERY = "对 %s 的结果负责时"
@@ -453,9 +491,7 @@ def induct_specs(episodes, actions, existing_fronts=None, now_game_day=""):
         spec = {
             "name": _spec_name(k), "tool_key": k, "state": "candidate",
             "version": 1,
-            "description": "星露谷 %s：失败 %d 例 / 成功 %d 例%s" % (
-                k[len("stardew."):], n_fail, n_ok,
-                ("，主失败形态 %s" % dom_fc) if dom_fc else ""),
+            "description": _description(k, n_fail, n_ok, dom_fc),
             "retrieval_anchor": _mechanical_anchor(k, evs),
             "task_query": _TASK_QUERY.get(k, DEFAULT_TASK_QUERY % k),
             "evidence": evs,

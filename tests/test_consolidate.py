@@ -219,5 +219,57 @@ class TestInductSpecs(unittest.TestCase):
             self.assertNotIn("viking://", s["body"])
 
 
+class TestDescriptionIsTheOnlyLiveSurface(unittest.TestCase):
+    """description 是 dsh skill 目录**唯一**注入进她提示词的字段。
+
+    证据（11-13 凌晨查源码 + 真会话）：
+      · dsh-skill-filesystem parseSkillFile 只保留 name/description/whenToUse/
+        invocation/metadata —— retrieval_anchor 在解析阶段就被丢弃
+      · dsh-tool-skill catalogSourceEntries 只渲染 {name, description[:500]}
+      · 她 72288 行真会话里 `retrieval_anchor` 出现 **0 次**
+    所以 description 必须自带「什么时候用」，不能只有统计数字。
+    """
+
+    def _specs(self):
+        eps, acts = [], []
+        for i, n in enumerate(("Cranberries", "Parsnips", "Blueberry")):
+            eps.append({"episode_id": "ep_%d" % i, "verdict": "failure",
+                        "failure_class": "noop",
+                        "outcome": {"rule": "stored_empty", "action": "a%d" % i,
+                                    "attribution": "segment"},
+                        "game_day": "冬2%d" % (i + 5)})
+            acts.append({"id": "a%d" % i, "verb": "raw", "raw_path": "/store",
+                         "segment": 'sd raw /store {"id":"%s"}' % n,
+                         "out_head": '{"ok": true, "stored": []}'})
+        specs, _, _ = induct_specs(eps, acts)
+        return specs
+
+    def test_known_key_description_leads_with_when(self):
+        # 已知 tool_key：场景必须在统计数字**前面**（目录行截断时前半句才活得下来）
+        s = self._specs()[0]
+        d = s["description"]
+        self.assertIn("存东西前", d)
+        self.assertLess(d.index("存东西前"), d.index("失败"),
+                        "场景必须排在统计前面：%r" % d)
+
+    def test_stats_still_present(self):
+        # 统计不能因为改写而丢——它是人判断这张卡可信度的依据
+        d = self._specs()[0]["description"]
+        self.assertIn("失败 3 例", d)
+        self.assertIn("成功 0 例", d)
+
+    def test_unknown_key_still_gets_stats(self):
+        # 没登记场景的 tool_key 不许炸，也不许编场景——只出统计
+        from expmem.consolidate import _description
+        d = _description("stardew.never_seen", 1, 2, "")
+        self.assertIn("失败 1 例", d)
+        self.assertIn("成功 2 例", d)
+
+    def test_description_within_catalog_cap(self):
+        # dsh 目录行 description 上限 500 字（catalogDescriptionMaxLength 默认值）
+        for s in self._specs():
+            self.assertLessEqual(len(s["description"]), 500)
+
+
 if __name__ == "__main__":
     unittest.main()

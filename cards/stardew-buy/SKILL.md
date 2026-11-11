@@ -1,6 +1,6 @@
 ---
 {
- "description": "星露谷 buy：失败 0 例 / 成功 3 例",
+ "description": "星露谷 buy：买东西前（必带 price，不带按售价×2 扣钱；买完当场看 totalCost 和包差）。证据 失败 0 例 / 成功 3 例",
  "evidence": [
   {
    "action": "ee915bffa1486724",

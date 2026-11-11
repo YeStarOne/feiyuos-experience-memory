@@ -418,3 +418,104 @@ stardew.buy  → 'buy farm op raw sd water'  中文词 0 个
 | `induct_gap.py` | 量化 `_mechanical_anchor` 的中文词产出为零 |
 | `why_fail.py` | 单条失败查询逐卡看交集/df 剥离/证据条数 |
 | `anchor_v5.py` | 过拟合演示：补锚 9/9 但留出集不动（反面教材，别照抄） |
+
+## 7-13. ⭐⭐⭐ `retrieval_anchor` 是死字段 —— 真链路核查（2026-11-13 凌晨）
+
+**这一节推翻了 §7-12 的一个前提。** 前面几轮都在调 `retrieval_anchor`（补锚、删句式词、证据面收窄成 anchor+标识符）。现在查明：**那个字段从来没进过她的提示词。**
+
+### 7-13-1. 源码两侧（不是推测，是读出来的）
+
+| 位置 | 事实 |
+|---|---|
+| `dsh-skill-filesystem/lib/index.js:696-706` | `parseSkillFile` 只返回 `{name, description, whenToUse?, invocation, metadata?, path, content}` —— **frontmatter 里除这几个键之外的一切在解析阶段就被丢弃** |
+| `dsh-tool-skill/lib/index.js:770-776` | `catalogSourceEntries` 只渲染 `{name, description}` |
+| `dsh-tool-skill/lib/index.js:1087-1089` | `description` 截 500 字（`catalogDescriptionMaxLength` 可配，默认 500） |
+
+### 7-13-2. 她的真会话（72288 行，全量 grep）
+
+```
+retrieval_anchor : 0 行
+task_query       : 0 行
+valid_from       : 0 行
+失败 0 例        : 12 行      ← 这个进了，因为它在 description 里
+```
+
+她的 skill 目录实测就是 12 行 `- \`name\`: description`，共 1854 字：
+
+```
+- `stardew-buy`: 星露谷 buy：失败 0 例 / 成功 3 例
+- `stardew-store`: 星露谷 store：失败 2 例 / 成功 5 例，主失败形态 noop
+- `stardew-sd-farm`: sd farm 农活四连：scan 只读看数 → water 自带 refill ...
+...
+```
+
+⇒ **唯一活面是 `description`。** anchor/task_query/evidence/state/confidence 一个字都不进去。
+
+### 7-13-3. 使用率：8537 次工具调用里 `skill` 被调了 3 次（0.035%）
+
+- `skill` 工具 **529/529 份 request/header 都在**（不是没注册）
+- 8537 次 `tool/call` 里 `skill` = **3 次**
+  - 1 次 `cordis-plugin-development`（她的开发工作，不是游戏）
+  - 2 次我们的卡：`stardew-store`（turn 926）、`stardew-fin-interface`（turn 959）
+- 对照：`bash` 5201 次、`pet_say` 1416 次
+
+⇒ 目录是**全量注入**的（12 条一次给全，不做检索），模型靠**语义**决定要不要 call。我们那套词法检索在这个链路上根本没被调用。
+
+### 7-13-4. 换到活面上重测：现库 0/15
+
+用**真留出集**（按会话 mtime 时间切分：前 70% 训练 / 后 30% 留出，留出里含游戏词 48 条，逐条人工标注「该不该召回」）：
+
+| description 面 | 该召回 15 条命中 | 不该召回 29 条误召 |
+|---|---|---|
+| 现库 | **0** | 4（13.8%） |
+| 我按训练侧说法改写 | 5 | 7 |
+
+现库那 4 条误召还是靠 `星露`/`露谷` 这种卡名里的字，不是 description 的功劳。
+
+### 7-13-5. 改写提升是假的：两折交叉验证
+
+5/15 看着像提升，但**折A→验B 召回 0/6 不变、折B→验A 只多 1 条**。提升全部来自我写过的那几条本身，泛化 ≈ 0。
+
+根因不是「我不会写」，是**词法在这条链路上本来就不成立**：她说「继续钓鱼吧」，卡里必须正好有 `钓鱼`；说「锁定时间了哦，可以使劲钓鱼鱼鱼」，卡里也得有 `钓鱼`。同一个意思有无限种说法，词表追不完。这也是为什么模型靠**语义**选卡（3 次调用里 2 次选对了我们的卡）。
+
+### 7-13-6. 真结论 + 三条路（**待拍板**）
+
+1. **`retrieval_anchor` 的调优到此为止**：它是死字段，继续调是零收益。字段本身留着无害（人读卡时它是有用的摘要），但**不许再拿它的指标当验收**。
+2. **description 才是要写好的东西**：现在 `stardew-buy` / `stardew-store` 的 description 是 `失败 0 例 / 成功 3 例` —— 只有统计数字，**没写什么时候用**。对比英文那 4 张卡（`agent-experience` 等）都是 `Use when ...` 开头。这是**当前唯一有确定收益的改动**：把 description 写成「什么时候用」，即使词法追不上，语义匹配也能受益。
+3. **要把我们的检索接进真链路，唯一合法挂点是 `skills.registerProvider`**（`dsh-skill/lib/index.js:147`，文档明确写了第三方 provider 怎么注册）。那是一个**插件级改动，要重启 dsh-web**，按纪律必须挑她空闲、且主人拍板。在此之前，`retrieve_skills` 只是离线尺子。
+
+### 7-13-7. 这一节对前几节的影响（诚实标注）
+
+- §7-12-2 的「证据面收窄成 anchor+标识符 +6.2pp」：**指标本身没错，但它量的是一条不走人的路**。保留代码（万一接上 provider 就用得上），但结论降级为「离线检索器内部的改进」，不再是「她的召回改善了」。
+- §7-12-4 的「召回天花板=词汇覆盖」：在 description 面上重测后**结论更强**——不只是词汇覆盖问题，是词法这条路本身追不上自然语言变体。
+- §7-12-5 的「结构性缺口待拍板」：仍然成立，但优先级降到 description 之后。
+
+### 7-13-8. 尺子（本节新增，都在服务器 /tmp）
+
+| 脚本 | 用途 |
+|---|---|
+| `native_probe.py` | 从真会话抽最后一份 skill 目录，量注入条目数/字数/匹配面 |
+| `skill_calls2.py` | 全量 `tool/call` 计数，看 `skill` 被调几次、哪几张卡 |
+| `hdr_tools.py` | 从 request/header 确认 `skill` 工具注册了几份 |
+| `dead_field.py` | description 逐条体检：哪几条只有统计没写使用时机 |
+| `real_holdout.py` | 按会话 mtime 时间切分出真留出集（70/30） |
+| `real_eval.py` | 真留出 44 条人工标注 + 现库召回/误召 |
+| `half_split.py` | 两折交叉验证（写A验B / 写B验A），防「我写过答案」的过拟合 |
+
+### 7-13-9. 补一刀：两面交集只有 2~31 词，anchor 独有 21~64 词
+
+改完 `stardew-buy`/`stardew-store` 的 description 后跑 A/B：**离线指标零变化**（指令 4/9、噪声 42/757 一字不动）。原因不是改动无效，是**两面不重叠**：
+
+| 卡 | 我们的过闸面 `_evidence_hay` | 她真链路的活面（name+description） | 交集 | **anchor 独有** |
+|---|---|---|---|---|
+| buy | 23 词 | 17 词 | **2**（buy, stardew） | 21 |
+| store | 30 词 | 24 词 | 5 | — |
+| sd-act | 87 词 | 47 词 | 12 | — |
+| fin-interface | 76 词 | 62 词 | 31 | **45** |
+| probe-after-action | 91 词 | 74 词 | 27 | **64** |
+
+我们过闸靠的是 anchor 独有的词（`bamboopole/bin/price/quantity/tail`、`audit/fail/link/node`、`harvest/sell/state`）——**这些词她一个字都看不到**。
+
+⇒ 所以「改 description」对离线尺子零影响是**必然**的，不是改动没用。反过来也说明：**离线尺子量不出 description 的好坏**。要验 description 只能用「她会不会 call skill」这个真信号，而那需要先有量（现在 8537 次里 3 次）。
+
+这也是为什么这一节的结论是「先别调，等接上 provider 或等真调用样本积累」，而不是「继续调 anchor」。

@@ -1,6 +1,6 @@
 ---
 {
- "description": "星露谷 store：失败 2 例 / 成功 5 例，主失败形态 noop",
+ "description": "星露谷 store：往仓库/箱子存东西前（stored 必须非空，stored:[] = 一件没存进去）。证据 失败 2 例 / 成功 5 例，主失败形态 noop",
  "evidence": [
   {
    "action": "e33871f348e1f7d5",
