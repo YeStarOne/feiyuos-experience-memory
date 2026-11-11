@@ -30,7 +30,15 @@ LIMITS = {
     "max_inject": 3,          # 目录行最多几条
     "when_max_chars": 80,     # 单行 when 截断
     "catalog_token_budget": 600,  # 注入 token 预算（实测调）
-    "min_multi_hits": 1,      # 过闸：至少命中几个**多字** token（纯单字堆叠不算证据）
+    # 过闸：至少命中几个**多字** token（纯单字堆叠不算证据）。
+    # 11-12 夜真库判别力实测（她 1001 个真实回合，158 有动作 / 843 纯聊天）：
+    #   1 → 判别力 20.2pp（有动作 75.3% vs 聊天 55.2%，聊天回合 1296 个噪声槽位）
+    #   2 → 判别力 36.2pp（有动作 53.8% vs 聊天 17.6%，噪声槽位 248）
+    # 聊天回合是「她随口说话」的回合，那种回合递卡 100% 是噪声。要 2 个多字
+    # 命中把噪声压掉 5 倍，同时真该有卡的回合仍留 54%（不是把闸关死）。
+    # 注意：单字召回本身**不能**当杠杆——实测关掉 CJK 单字（只留 bigram）
+    # 判别力一点没变，因为 bigram 已经把该匹配的都匹配上了。
+    "min_multi_hits": 2,
 }
 ACTIVE_STATES = ("candidate", "observed", "verified", "pending_review")
 # 进目录行（refs）的状态——pending_review 只进冲突对/total_active（11-12 下一批）

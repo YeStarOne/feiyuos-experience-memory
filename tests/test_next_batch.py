@@ -274,7 +274,9 @@ class TestPendingPolicy(unittest.TestCase):
         self.assertEqual(r2["generic_only"], 0)
 
     def test_small_catalog_untouched(self):
-        # 小语料（<7 张）cap>N 等于不剥——夹具/小目录向后兼容
+        # 小语料（<7 张）cap>N 等于不剥——夹具/小目录向后兼容。
+        # 查询给「这张卡」而不是「这张」：min_multi=2 下单个词只算一条证据，
+        # 这里要测的是「没被当模板词剥掉」，不是闸的宽度。
         cat = self._cat([
             {"name": "a", "description": "甲", "state": "candidate",
              "tool_key": "stardew.a", "retrieval_anchor": "alpha 这张",
@@ -283,7 +285,7 @@ class TestPendingPolicy(unittest.TestCase):
              "tool_key": "stardew.b", "retrieval_anchor": "beta 这张",
              "task_query": "先查这张卡"},
         ])
-        r = retrieve.retrieve_skills("这张", cat)
+        r = retrieve.retrieve_skills("这张卡", cat)
         self.assertEqual(len(r["refs"]), 2)          # 两张都能过（旧行为保留）
 
     def test_slash_split_hygiene_and_recall(self):
@@ -301,8 +303,9 @@ class TestPendingPolicy(unittest.TestCase):
         )
         r = retrieve.retrieve_skills("[图片:/home/agent/.dsh/media/media_1.jpg]", cat)
         self.assertEqual([x["name"] for x in r["refs"]], [])   # 路径碎片不再命中
-        r2 = retrieve.retrieve_skills("warp", cat)
-        self.assertEqual([x["name"] for x in r2["refs"]], ["sd-act"])  # 连体词拆开可召回
+        # 连体词拆开可召回：用两个拆出来的词（min_multi=2，单词「warp」只算一条证据）
+        r2 = retrieve.retrieve_skills("warp move", cat)
+        self.assertEqual([x["name"] for x in r2["refs"]], ["sd-act"])
 
     def test_default_task_query_template_clean(self):
         # 归纳模板不许再产出「先查这张卡」级口语泛词（检索噪声源，见真库反事实）

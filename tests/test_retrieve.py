@@ -47,8 +47,11 @@ class TestRetrieve(unittest.TestCase):
             self.assertEqual(r["refs"], [], q)
 
     def test_compound_token_split(self):
-        # cmb-P0②：复合 token 拆层——query 单词能打中 stardew-probe-after-action
-        r = retrieve_skills("probe", self.cat)
+        # cmb-P0②：复合 token 拆层——卡名 stardew-probe-after-action 按 '-' 拆开，
+        # 查询里 probe / after 各自都能命中（11-12 起 min_multi=2，故用两个拆出来的
+        # 词而不是单词「probe」——单关键词召回经真库实测不是真需求，数字见
+        # expmem/retrieve.py 里 LIMITS 的注释）
+        r = retrieve_skills("probe after", self.cat)
         self.assertEqual(len(r["refs"]), 1)
 
     def test_hit_above_threshold(self):
@@ -67,17 +70,18 @@ class TestRetrieve(unittest.TestCase):
         import tempfile, os, json as J
         d = tempfile.mkdtemp()
         for i in range(5):
-            # 11-12 通用 token 剥离后，cap 测试夹具改为每卡一个唯一实词
-            # （共享词「对账 state」会被当无鉴别力剥掉——同 anchor 同查询的
-            # 旧构造在剥离语义下=污染形态，正是闸要拦的东西）
+            # 11-12 通用 token 剥离 + min_multi=2 后，cap 夹具要给每卡**两个**
+            # 唯一实词：共享词「对账 state」会被当无鉴别力剥掉，只留一个 uniqN
+            # 则每条证据不足被丢——那测的就不是 cap 而是闸了
             front = {"name": "card-%d" % i, "description": "x", "state": "observed",
                      "tool_key": "stardew.state", "version": 1,
-                     "retrieval_anchor": "对账 state uniq%d" % i,
+                     "retrieval_anchor": "对账 state uniq%d zeta%d" % (i, i),
                      "task_query": "写操作后同回合核对结果"}
             os.makedirs(os.path.join(d, "card-%d" % i))
             with open(os.path.join(d, "card-%d" % i, "SKILL.md"), "w", encoding="utf-8") as f:
                 f.write("---\n%s\n---\n正文" % J.dumps(front, ensure_ascii=False))
-        r = retrieve_skills("对账 state uniq0 uniq1 uniq2 uniq3 uniq4", load_catalog(d))
+        q = "对账 state " + " ".join("uniq%d zeta%d" % (i, i) for i in range(5))
+        r = retrieve_skills(q, load_catalog(d))
         self.assertEqual(len(r["refs"]), LIMITS["max_inject"])
         self.assertTrue(r["incomplete"])
 
@@ -223,10 +227,13 @@ class TestGateRegression(unittest.TestCase):
             self.assertIn(want, names, "%s → %s" % (q, names))
 
     def test_known_residual_documented(self):
-        # cmb 记的残余：「一个」里的「个」不是功能字，现行规则仍会过闸。
-        # 不靠加字表解决——S3 卡数上去后换目录 DF（稀有=证据，高频=噪声）。
+        # cmb 记的残余：「一个」里的「个」不是功能字，旧规则（min_multi=1）会过闸。
+        # 11-12 夜把 min_multi 提到 2 后这条残余**已关闭**——「一个」只产出
+        # 「一个」这 1 个多字命中，不够两条证据。仍然有命中，所以 dropped_weak
+        # 要看得见（不是靠悄悄消失）。
         r = retrieve_skills("一个", self.cat)
-        self.assertEqual([x["name"] for x in r["refs"]], ["sd-plant"])
+        self.assertEqual(r["refs"], [])
+        self.assertGreater(r["dropped_weak"], 0)
 
     def test_empty_refs_still_tells_her_the_book_exists(self):
         r = retrieve_skills("咖啡因摄入", self.cat)
