@@ -142,15 +142,16 @@ def scan_success(episodes, actions):
     """成功轨证据：效果能机械核实才收，宁可空轨不硬凑。
     - store 存进：out 含非空 stored:[…]（stored_empty 的反演）
     - 收到：收/harvest/collect 后跟 ≥1（harvest_zero_with_ready 的反演）
-    - 买对：buy 输出里 JSON 扣款字段 totalCost/charge（buy_double_charge 的反演；
-      状态行前缀的「钱N」是余额不是扣款，绝不采）
+    - 买对：buy 输出里 JSON 扣款字段 totalCost/charge（唯一可信扣款证据；
+      状态行的「钱N」是共享钱包余额不是扣款，绝不采——11-11 主人纠正：
+      主持也赚/花、卖货隔日结算，余额差不可归因到这一单）
     成功轨同样要求动作点得回（episode 里实际执行的那条 action 行）。"""
     act_by_id = {a.get("id"): a for a in (actions or [])}
     cand = []           # (session, call_id) -> 首个匹配（含动词信息）
     rows = []
     for e in (episodes or []):
         if e.get("verdict") == "failure":
-            continue            # 失败集（含 blocked/wrong_arg）不进成功轨
+            continue            # 失败集（含 blocked；wrong_arg 仅历史数据）不进成功轨
         for aid in e.get("actions") or []:
             a = act_by_id.get(aid)
             if a is None or not (a.get("out_head") or "").strip():

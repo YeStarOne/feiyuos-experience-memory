@@ -78,37 +78,36 @@ class TestBlocked(unittest.TestCase):
         self.assertEqual(ep["probe_status"], "ok")
 
 
-class TestWrongArg(unittest.TestCase):
-    def test_buy_double_charge_real_format(self):
-        # cmb-P1-1：真实格式——「钱142538」与 buy 返回 {"totalCost":...}
+class TestBalanceDeltaNotEvidence(unittest.TestCase):
+    """11-11 主人纠正：星露谷钱包是共享的（主持那边也赚/花），卖货的钱隔日结算——
+    买前后余额差不能证明这一单扣了多少。wrong_arg 双倍扣款规则已退役。"""
+
+    def test_balance_drop_bigger_than_charge_stays_unknown(self):
+        # 旧规则会判双倍扣款；现在余额差不是证据
         ep = {"verdict": "unknown"}
         classify_episode(ep, [
             act("p0", verb="state", ts=1000, out="Beach(44,35) 冬25 | 钱1000"),
             act("b1", raw_path="/buy", ts=2000, out='{"totalCost":300,"ok":true}'),
             act("p1", verb="state", ts=3000, out="钱400")])
-        self.assertEqual(ep["verdict"], "failure")
-        self.assertEqual(ep["failure_class"], "wrong_arg")
-        self.assertEqual(ep["outcome"]["rule"], "buy_double_charge")
-        self.assertEqual(ep["outcome"]["delta"], 600)
-        self.assertEqual(ep["outcome"]["charge"], 300)
+        self.assertEqual(ep["verdict"], "unknown")
+        self.assertNotIn("failure_class", ep)
 
-    def test_buy_double_charge_legacy_g_format(self):
+    def test_host_spending_between_probes_not_failure(self):
+        # 主持在中间花钱：余额跳水与她的购买无关，不许判失败
         ep = {"verdict": "unknown"}
         classify_episode(ep, [
-            act("p0", verb="state", ts=1000, out="钱 1,000 g"),
-            act("b1", raw_path="/buy", ts=2000, out='{"charge":300,"ok":true}'),
-            act("p1", verb="state", ts=3000, out="钱 400 g")])
-        self.assertEqual(ep["failure_class"], "wrong_arg")
-        self.assertEqual(ep["outcome"]["delta"], 600)
+            act("p0", verb="state", ts=1000, out="钱100000"),
+            act("b1", raw_path="/buy", ts=2000, out='{"totalCost":100,"ok":true}'),
+            act("p1", verb="state", ts=3000, out="钱51000")])
+        self.assertEqual(ep["verdict"], "unknown")
 
-    def test_buy_with_midway_sale_not_double_charge(self):
-        # cmb-P2-9：最近邻前后，中途卖钱不许压低 after 误报双扣
+    def test_shipping_settlement_between_probes_not_failure(self):
+        # 隔日结算/卖货到账：余额反而涨，也不许判失败
         ep = {"verdict": "unknown"}
         classify_episode(ep, [
             act("p0", verb="state", ts=1000, out="钱1000"),
-            act("b1", raw_path="/buy", ts=2000, out='{"totalCost":300}'),
-            act("p2", verb="state", ts=2500, out="钱500"),    # 卖货后
-            act("p3", verb="state", ts=3000, out="钱800")])   # 最近邻 after=800
+            act("b1", raw_path="/buy", ts=2000, out='{"totalCost":300,"ok":true}'),
+            act("p1", verb="state", ts=3000, out="钱9000")])
         self.assertEqual(ep["verdict"], "unknown")
 
     def test_buy_correct_charge_not_failure(self):
@@ -120,7 +119,7 @@ class TestWrongArg(unittest.TestCase):
         self.assertEqual(ep["verdict"], "unknown")
 
     def test_buy_missing_evidence_stays_unknown(self):
-        # 缺钱差证据就放弃——宁 unknown 不错判
+        # 没有余额/探针也不判失败——宁 unknown 不错判
         ep = {"verdict": "unknown"}
         classify_episode(ep, [act("b1", raw_path="/buy", out='{"totalCost":300}')])
         self.assertEqual(ep["verdict"], "unknown")

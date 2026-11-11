@@ -50,7 +50,7 @@ class Episode:
     actions: list = field(default_factory=list)   # Action.id 列表
     verdict: str = "unknown"      # 四值：success|failure|unknown|interrupted（外部打断≠她的失败）
     probe_status: str = "unavailable"  # ok|unavailable：unavailable→unknown，不进 bench 分母（cmb-B）
-    failure_class: str = ""       # 五型：noop|wrong_arg|stale|blocked|partial（cmb-A；stale/partial 留给 S2）
+    failure_class: str = ""       # noop|blocked|stale|partial（wrong_arg 11-11 退役：钱包共享/隔日结算，余额差不可判扣款；stale/partial 留给 S2）
     act_count: int = 0            # 便利列：本集动作数；game = act_count 且含 sd 动作
     game: bool = False
     outcome: dict = field(default_factory=dict)   # 命中规则的证据（signal/action）

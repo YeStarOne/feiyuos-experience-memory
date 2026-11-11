@@ -37,11 +37,11 @@
   }
  ],
  "name": "stardew-buy",
- "retrieval_anchor": "bamboopole bin buy id price quantity raw sd tail",
+ "retrieval_anchor": "bamboopole bin buy id price quantity raw sd tail 余额 对账 共享钱包",
  "state": "candidate",
  "task_query": "对 stardew.buy 的结果负责时先查这张卡",
  "tool_key": "stardew.buy",
- "version": 1
+ "version": 2
 }
 ---
 # stardew.buy 的动手卡
@@ -53,6 +53,10 @@
 - `./bin/sd raw /buy '{"id":"(T)BambooPole"}' 2>&1|tail -c 130` → 效果已核（buy_charged_100）
 - `./bin/sd raw /buy '{"id":"(O)685","quantity":200,"price":5}' 2>&1|tail -c 120` → 效果已核（buy_charged_1000）
 - `./bin/sd raw /buy '{"id":"(O)481","quantity":20,"price":160}' 2>&1|tail -c 120` → 效果已核（buy_charged_3200）
+
+## 对账口径（11-11 主人纠正）
+只认返回 JSON 的 `totalCost`（应等于 标价×数量）和背包里该物品多出的 `quantity` 件。
+**余额差不能当证据**：星露谷钱包是共享的（主持那边也在赚/花），卖货的钱隔日才结算。
 
 ## 失败轨
 （暂无失败轨证据——本卡目前只有成功形态）

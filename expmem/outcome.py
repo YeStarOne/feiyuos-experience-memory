@@ -3,14 +3,15 @@
 `out_head`（sd 一行摘要 / 原始返回头 160 字），不碰桥、不碰她。
 
 规则优先级（episode 级，先命中先判）：
-  interrupted > blocked > 探针可用性 > wrong_arg(双倍扣钱) > noop(假成功) > unknown
+  interrupted > blocked > 探针可用性 > noop(假成功) > unknown
   - blocked：连接层失败（refused/reset/curl 7|28|56/超时）——不需要读探针，直接判；
     不是她的错（cmb-A），bench 分母排除、单列计数
   - 探针可用性（cmb-B）：无任何带文本的读探针 → unavailable；探针活着但字段整片
     000（11-10 主持客户端卡死的真实形态 `farm_report:000 crop_seasons:000 …`）
     也算 unavailable——探针不可用 ≠ 失败，不许记成她的 noop
-  - wrong_arg：/buy 不带 price 按售价×2 扣钱——只在证据齐全（买前后钱差 + 扣款额）
-    时才判，缺一样就放弃（宁 unknown 不错判）
+  - 余额差不判扣款（11-11 主人纠正）：星露谷钱包是共享的（主持那边也在赚/花），
+    卖货的钱隔日才结算——「买前后余额差」不能当扣款证据，旧的 wrong_arg 双倍扣钱
+    规则已退役；买只认返回 JSON 的 totalCost/charge（consolidate 成功轨同源）。
   - noop：`/store` 返 stored:[]；ready>0 而 收/收菜 0 件（day-loop 空转判据同源）
   - success（S4，保守机械版）：goal_hint 非空 ∧ 写动作带正效果证据（stored 非空/
     收获≥1）∧ 写后同回合有读探针——三条件闭环才判，缺一 unknown。
@@ -29,10 +30,8 @@ DEAD_PROBE_RE = re.compile(r"[:=]000\b")     # 字段整片 000（≥2 处才算
 STORED_EMPTY_RE = re.compile(r"stored\"?\s*:\s*\[\s*\]")
 HARVEST_ZERO_RE = re.compile(r"(收|harvest|collect)[^\d]{0,12}0|(?<!\d)0\s*(?:件|个|株)", re.I)
 READY_RE = re.compile(r"[\"']?ready[\"']?\s*[:=]\s*(\d+)")
-# cmb-P1-1：生产实锤——g 后缀 0/510 命中；真实形态=「钱142538」与
-# buy 返回 JSON 的 totalCost/remainingGold
-MONEY_RE = re.compile(r"(?:钱|gold)\s*(\d[\d,]*)|(\d[\d,]*)\s*g\b", re.I)
-BALANCE_JSON_RE = re.compile(r"\"(?:remainingGold|gold)\"\s*:\s*(\d+)", re.I)
+# 扣款只认 buy 返回 JSON 的显式字段；「钱142538」是共享钱包余额不是 charge
+# （11-11 主人纠正：主持也赚/花、卖货隔日结算——余额差一律不作证据）
 CHARGE_JSON_RE = re.compile(r"\"(?:charge|cost|spent|totalCost)\"\s*:\s*(\d+)", re.I)
 
 PROBE_VERBS = frozenset("state inv near farm".split())
@@ -49,20 +48,9 @@ def is_probe(a) -> bool:
     return a.verb in PROBE_VERBS or a.raw_path.startswith(PROBE_RAW_PREFIX)
 
 
-def _money_val(h: str):
-    m = BALANCE_JSON_RE.search(h)
-    if m:
-        return int(m.group(1))
-    m = MONEY_RE.search(h)
-    return int((m.group(1) or m.group(2)).replace(",", "")) if m else None
-
-
 def _charge(h: str):
     m = CHARGE_JSON_RE.search(h)
-    if m:
-        return int(m.group(1))
-    m = MONEY_RE.search(h)
-    return int((m.group(1) or m.group(2)).replace(",", "")) if m else None
+    return int(m.group(1)) if m else None
 
 
 def _match(heads, sig_re, keywords):
@@ -112,29 +100,8 @@ def classify_episode(ep: dict, actions) -> dict:
         return ep
     ep["probe_status"] = "ok"
 
-    # wrong_arg：/buy 双倍扣钱（证据齐全才判；cmb-P2-9 取最近邻前后钱差，防中途卖钱压低）
-    money = []
-    for a, h in probes:
-        v = _money_val(h)
-        if v is not None:
-            money.append((a.ts, v))
-    for a, h in heads:
-        if a.verb != "buy" and a.raw_path != "/buy":
-            continue
-        charge = _charge(h)
-        if charge is None:
-            continue
-        before = [(t, v) for t, v in money if t < a.ts]
-        after = [(t, v) for t, v in money if t > a.ts]
-        if before and after:
-            m0 = max(before, key=lambda x: x[0])[1]   # 最近一次「买之前」
-            m1 = min(after, key=lambda x: x[0])[1]    # 最近一次「买之后」
-            delta = m0 - m1
-            if delta >= 1.8 * charge > 0:
-                ep.update(verdict="failure", failure_class="wrong_arg",
-                          outcome={"rule": "buy_double_charge", "action": a.id,
-                                   "delta": delta, "charge": charge})
-                return ep
+    # 11-11 起不再从余额差判扣款：钱包是共享的（主持也在赚/花），卖货隔日结算
+    # → 余额变动无法归因到这一单。买只认 JSON totalCost/charge（consolidate 用）。
 
     # noop：假成功（归因动作优先 segment 含关键词者，见 _match）
     ready = None
