@@ -21,6 +21,7 @@
 """
 import glob
 import json
+import math
 import os
 import re
 
@@ -109,6 +110,12 @@ def load_catalog(skills_dir: str):
     return fronts
 
 
+def _hay(front: dict) -> str:
+    return " ".join([front.get("retrieval_anchor", ""), front.get("task_query", ""),
+                     front.get("name", ""), front.get("tool_key", ""),
+                     front.get("description", "")])
+
+
 def _evidence(q_tokens: set, front: dict, domain=None):
     """闸与排序分家（cmb 验收口径）：本函数只算**命中证据**，不掺 confidence/state。
 
@@ -117,11 +124,26 @@ def _evidence(q_tokens: set, front: dict, domain=None):
     d = front.get("domain")
     if domain and d and d != domain:
         return 0, set()
-    hay = " ".join([front.get("retrieval_anchor", ""), front.get("task_query", ""),
-                    front.get("name", ""), front.get("tool_key", ""),
-                    front.get("description", "")])
-    matched = q_tokens & _tokens(hay)
+    matched = q_tokens & _tokens(_hay(front))
     return len(matched), matched
+
+
+def _df_cap(n: int) -> int:
+    """通用 token 判别阈值：在 ≥cap 张卡的 hay 里出现过的 token 无鉴别力。
+    cap = max(4, ceil(0.6N))——小语料（<7 张）cap>N 等于不剥（夹具/小目录
+    向后兼容），8 张的现网目录剥掉「这张/失败」这类模板词。"""
+    return max(4, math.ceil(0.6 * max(n, 1)))
+
+
+def _df_map(catalog) -> dict:
+    """token → 出现在几张卡的 hay 里（机械闸先跑真产物命中数教训的产物：
+    真库 8 卡全含「这张卡」，任何带「这张」的聊天回合能命中全部卡再靠
+    confidence 瞎选——手工黑名单追不完模板词，语料自己会招供）。"""
+    df = {}
+    for f in catalog:
+        for t in _tokens(_hay(f)):
+            df[t] = df.get(t, 0) + 1
+    return df
 
 
 def _passes(hit: int, matched: set) -> bool:
@@ -157,10 +179,14 @@ def _rank(hit: int, front: dict) -> float:
 
 def retrieve_skills(q: str, catalog, domain=None, top_k=None):
     """返回 {"refs": [...], "incomplete": bool, "dropped_weak": int,
-    "conflict_pairs": [...], "pending_hidden": int, "total_active": int}。
+    "conflict_pairs": [...], "pending_hidden": int, "generic_only": int,
+    "total_active": int}。
 
     refs 已按 name 去重保最高分；deprecated 不进；pending_review 有命中也不进
-    refs（只进冲突对，pending_hidden 计数）；过闸只吃命中证据（见 _passes）。
+    refs（只进冲突对，pending_hidden 计数）；过闸只吃命中证据（见 _passes），
+    且命中里**全库通用 token（出现在 ≥df_cap 张卡）先剥离**——模板词「这张」
+    级命中不算证据，剥完空的不进 dropped_weak（generic_only 单独计数，
+    11-12 夜真库反事实实锤：聊天回合靠「这张」命中全卡再靠 confidence 瞎选）。
     dropped_weak = 有命中但没过闸的卡数（cmb 验收：它必须重新具备鉴别力）。
     total_active = 库里 active 卡总数——refs=∅ 时调用方据此发「另有 N 条」提示
     （少递但不瞒着她，cmb：否则「宁缺毋滥」等价于她永远不知道有这本错题本）。"""
@@ -173,22 +199,31 @@ def retrieve_skills(q: str, catalog, domain=None, top_k=None):
             by_name[nm] = f
     if not q_tokens:
         return {"refs": [], "incomplete": False, "dropped_weak": 0,
-                "conflict_pairs": [], "pending_hidden": 0,
+                "conflict_pairs": [], "pending_hidden": 0, "generic_only": 0,
                 "total_active": total_active}
-    scored, dropped_weak, pending_hidden = [], 0, 0
+    scored, dropped_weak, pending_hidden, generic_only = [], 0, 0, 0
+    df = _df_map(catalog)
+    df_cap = _df_cap(total_active)
     pairable = []          # 进冲突对判定的卡：过闸 refs + 过闸 pending
     for f in catalog:
         hit, matched = _evidence(q_tokens, f, domain=domain)
         if hit == 0:
             continue
-        if not _passes(hit, matched):
+        # 通用 token 剥离（11-12 夜反事实实锤）：命中全由「这张」级模板词凑出
+        # 的卡不算证据——剥完空了连 dropped_weak 都不进（纯聊天回合不该给
+        # dropped_weak 灌水），单独计数 generic_only
+        real = {t for t in matched if df.get(t, 0) < df_cap}
+        if not real:
+            generic_only += 1
+            continue
+        if not _passes(len(real), real):
             dropped_weak += 1
             continue
         if f.get("state") == "pending_review":
             pending_hidden += 1
             pairable.append(f)
             continue
-        scored.append((_rank(hit, f), f, hit))
+        scored.append((_rank(len(real), f), f, len(real)))
         pairable.append(f)
     scored.sort(key=lambda x: (-x[0], x[1].get("name", "")))
     # 多层命中折一条（同 name 保最高分——scored 已排序，首个即最高）
@@ -227,7 +262,8 @@ def retrieve_skills(q: str, catalog, domain=None, top_k=None):
                 pairs.append(list(p))
     return {"refs": refs, "incomplete": incomplete,
             "dropped_weak": dropped_weak, "conflict_pairs": pairs,
-            "pending_hidden": pending_hidden, "total_active": total_active}
+            "pending_hidden": pending_hidden, "generic_only": generic_only,
+            "total_active": total_active}
 
 
 def empty_hint(result) -> str:

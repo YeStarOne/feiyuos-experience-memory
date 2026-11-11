@@ -67,14 +67,17 @@ class TestRetrieve(unittest.TestCase):
         import tempfile, os, json as J
         d = tempfile.mkdtemp()
         for i in range(5):
+            # 11-12 通用 token 剥离后，cap 测试夹具改为每卡一个唯一实词
+            # （共享词「对账 state」会被当无鉴别力剥掉——同 anchor 同查询的
+            # 旧构造在剥离语义下=污染形态，正是闸要拦的东西）
             front = {"name": "card-%d" % i, "description": "x", "state": "observed",
                      "tool_key": "stardew.state", "version": 1,
-                     "retrieval_anchor": "对账 state 存仓库 收庄稼",
+                     "retrieval_anchor": "对账 state uniq%d" % i,
                      "task_query": "写操作后同回合核对结果"}
             os.makedirs(os.path.join(d, "card-%d" % i))
             with open(os.path.join(d, "card-%d" % i, "SKILL.md"), "w", encoding="utf-8") as f:
                 f.write("---\n%s\n---\n正文" % J.dumps(front, ensure_ascii=False))
-        r = retrieve_skills("对账 state 存仓库", load_catalog(d))
+        r = retrieve_skills("对账 state uniq0 uniq1 uniq2 uniq3 uniq4", load_catalog(d))
         self.assertEqual(len(r["refs"]), LIMITS["max_inject"])
         self.assertTrue(r["incomplete"])
 

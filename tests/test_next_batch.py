@@ -254,6 +254,38 @@ class TestPendingPolicy(unittest.TestCase):
         r = retrieve.retrieve_skills("buy price charge", cat)
         self.assertEqual(r["conflict_pairs"], [])    # 降废的旧版不算悬案
 
+    def test_generic_token_stripped_on_real_size_catalog(self):
+        # 11-12 夜真库反事实实锤：8 张卡的默认 task_query 全含「这张卡」，
+        # 聊天回合「把这张图发给小主人」曾命中全部卡。真库量级(≥7)下
+        # 通用 token 必须剥掉；剥完空的不进 refs 也不进 dropped_weak。
+        cat = self._cat([
+            {"name": "card-%d" % i, "description": "星露谷 工具%d" % i,
+             "state": "candidate", "tool_key": "stardew.t%d" % i,
+             "retrieval_anchor": "tool%d zig%d" % (i, i),
+             "task_query": "对 stardew.t%d 的结果负责时先查这张卡" % i}
+            for i in range(8)
+        ])
+        r = retrieve.retrieve_skills("把这张图发给小主人", cat)
+        self.assertEqual([x["name"] for x in r["refs"]], [])
+        self.assertEqual(r["generic_only"], 8)       # 全部是模板词命中
+        self.assertEqual(r["dropped_weak"], 0)
+        r2 = retrieve.retrieve_skills("tool3 zig3", cat)   # 唯一实词照常命中
+        self.assertEqual([x["name"] for x in r2["refs"]], ["card-3"])
+        self.assertEqual(r2["generic_only"], 0)
+
+    def test_small_catalog_untouched(self):
+        # 小语料（<7 张）cap>N 等于不剥——夹具/小目录向后兼容
+        cat = self._cat([
+            {"name": "a", "description": "甲", "state": "candidate",
+             "tool_key": "stardew.a", "retrieval_anchor": "alpha 这张",
+             "task_query": "先查这张卡"},
+            {"name": "b", "description": "乙", "state": "candidate",
+             "tool_key": "stardew.b", "retrieval_anchor": "beta 这张",
+             "task_query": "先查这张卡"},
+        ])
+        r = retrieve.retrieve_skills("这张", cat)
+        self.assertEqual(len(r["refs"]), 2)          # 两张都能过（旧行为保留）
+
 
 # ---------- 5) settled 台账压实 ----------
 
