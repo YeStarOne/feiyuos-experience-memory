@@ -519,3 +519,119 @@ valid_from       : 0 行
 ⇒ 所以「改 description」对离线尺子零影响是**必然**的，不是改动没用。反过来也说明：**离线尺子量不出 description 的好坏**。要验 description 只能用「她会不会 call skill」这个真信号，而那需要先有量（现在 8537 次里 3 次）。
 
 这也是为什么这一节的结论是「先别调，等接上 provider 或等真调用样本积累」，而不是「继续调 anchor」。
+
+---
+
+## 7-14. 真瓶颈不在 description 写得好不好，在「没有任何机制在需要时把卡递到她眼前」
+
+日期：2026-11-13 凌晨。承接 §7-13（anchor 是死字段、description 是唯一活面）。
+
+### 7-14-1. 先量她的行为面：她根本不「查目录」
+
+| 行为 | 次数 |
+|---|---|
+| `bash` 调用 | **5222** |
+| `pet_say` | 1416 |
+| 覆盖我们卡的 sd 端点**真实调用** | **173** |
+| `skill` 工具调用 | **3** |
+
+其中 `/interact` 60、`/state` 31、`/store` 21、`/use` 19、`/warp` 14、`/buy` 14、`/sell` 10。
+
+她玩游戏的路径是**直接敲 `sd <端点>`**，从不先问「有没有一张卡讲这个」。所以 §7-13 落地的「description 里写清什么时候用」是必要条件但不是充分条件——**没人会在她敲命令前把那句 description 递给她**。
+
+### 7-14-2. 那 3 次真调用是被「点名」触发的，不是被目录触发的
+
+往前找每次 `skill` 调用前的真实用户话（跳过时间戳注入）：
+
+| 调用 | 触发语 | 性质 |
+|---|---|---|
+| `cordis-plugin-development` | 群里「二维码给我扫扫」 | 无关样本 |
+| `stardew-store` (turn 926) | RN 团队信：「把包里随便一件东西存进仓库箱子（**/store**）」 | **信里点名了端点** |
+| `stardew-fin-interface` (turn 959) | RN 团队信：「第14课 · 技能脚本接口 · **鱼鳍 fin**」 | **信里点名了工具** |
+
+两次都不是「她看了目录后按 description 语义选中」，而是**外部指令直接点名**。
+
+顺手排除了一个假解释：`The available skill catalog changed` 这条注入全语料出现 **71 次**，只带来 2 次调用（都在其后 40 事件内）。**这条信号本身没有驱动力**。
+
+### 7-14-3. 结论：知识要在「动手那一刻」被递到眼前
+
+- 目录全量注入 22 条 = 2646 字 ≈ 1323 token，**成本不是问题**
+- 问题是**时机**：她把 `sd /store` 敲进 bash 时，那张卡的内容不在她的视野里
+- 所以「提升召回率」这个方向本身错了——**没有查询发生，就没有召回**
+
+### 7-14-4. 唯一合法的注入点（读源码确认）
+
+| 挂点 | 位置 | 能力 |
+|---|---|---|
+| `tools/post-execute` | `dsh-repeat-tool-reminder/lib/index.js:2251` | 返回值可带 `additionalContexts`，**塞进她下一轮上下文** |
+| `agent/pre-step` | `dsh-agent-loop/lib/index.js:909` | waterfall，可改 `messages`（追加消息） |
+| `agent/request` | `dsh-agent-loop/lib/index.js:1193` | waterfall，可改请求 config |
+| `skills.registerProvider` | `dsh-skill/lib/index.js:147` | 换掉整个目录来源 |
+
+`dsh-repeat-tool-reminder` 就是「观察工具调用 → 注入提醒」的**现成范例**，它的 `observe(exec)` 在 `tools/post-execute` 里拿参数、按阈值决定是否 `createUserMessage`。我们要做的事形态完全一样：
+
+> 她敲 `sd /store` 且 `stored: []`（或任何已知失败形态）→ 下一轮注入 `stardew-store` 卡的对账口径。
+
+这是**插件级改动**（要新建一个 cordis 插件并加进 `cordis.patch.yml`），需要重启 dsh-web，按纪律必须挑她空闲 + 主人点头。**未做，等拍板。**
+
+### 7-14-5. 顺带挖到并修掉的真 bug：`sd raw` 把长 JSON 切成非法 JSON
+
+量「当场递卡」的价值上限时，先量「有多少次调用是失败的」——结果 `isError` 全 `false`，按内容文本量才看出来：
+
+| 项 | 数 |
+|---|---|
+| sd 端点调用 | 172 |
+| 内容里有失败迹象 | **7（4.1%）** |
+| 其中 `Traceback` | **7（全部）** |
+| 按端点 | `/state` **6/31 = 19.4%**，`/use` 1/19，其余 0 |
+
+**端点本身 0 失败**。7 次全是她内联 `| python3 -c "json.load(sys.stdin)"` 炸掉。
+
+根因（`~/qq-workspace/bin/sd:335`）：
+```python
+print(json.dumps(d, ensure_ascii=False)[:1500])
+```
+`/state` 真实 12387 字，被切到 1527 字，断在 `"time": {` 中间 → 非法 JSON。直连 47843 同一时刻返回 13036 字节合法 JSON。
+
+**为什么之前没发现**：`isError` 恒 `false`（bash 管道把退出码吃掉），所以「工具层失败」这个信号对她、对我们**都不存在**。又一次「校验没落在被消费的那一份上」。
+
+修法（`bin/sd`）：
+- 超长时**折叠大字段**而不是切字符：预算 3000 字
+- `CORE = {ok, worldReady, player, time, location, activeMenu, activeEvent, in_dialogue}` **永不折叠**（`player` 单字段 1288 字，按纯体积排序会先折它 → `d["player"]["money"]` 立刻 KeyError，等于把工具修坏）
+- 列表类先折，给 `{_count, _sample}`（1 条样例截 160 字）
+- `_folded` 如实列出折了谁
+
+实测：`/state` 12387 → 2546 字（省 79%），`player.money`/`time.timeOfDay`/`location.name` 全可直接读。
+
+顺手消掉双拷贝漂移：`bin/sd.py` 原来是「同一份代码两个名字」（`docs/sd-bridge-wrapper.md` 明文这么写），但已漂成**默认桥 47844（主持的身体）+ 缺 `Host: localhost` 头（打 47843 必 400）**。改成 `runpy` 转发到 `bin/sd`，实现只留一份。
+
+### 7-14-6. 顺带发现：有一张卡在她目录里根本不存在
+
+`stardew-mine-fight/SKILL.md` 是**纯 markdown、没有 frontmatter**。`parseSkillFile` 直接跳过 → 这张卡写得多好都进不了目录。已补 frontmatter（22/22 现在全部可进目录）。
+
+**这是一个可自动化的闸**：产卡/收卡时校验「frontmatter 是合法 JSON + description 非空且 ≤500」，否则卡是**静默不可见**的。§7-13 的 4 条测试锁的是 description 内容，没锁「卡到底进不进目录」。
+
+### 7-14-7. 落地清单
+
+| 项 | 状态 |
+|---|---|
+| `bin/sd` 折叠式截断（不再产出非法 JSON） | ✅ 已改并实测 |
+| `bin/sd.py` 改成转发层（消双拷贝 + 修 47844/缺 Host 头） | ✅ 已改并实测 |
+| 新卡 `stardew-raw-truncated-json`（症状→判据→修法，不是统计数字） | ✅ 已写入，150 字 |
+| `stardew-mine-fight` 补 frontmatter（原本不可见） | ✅ 已补 |
+| 全库 22/22 可进目录，目录 2646 字 ≈ 1323 token | ✅ 已核 |
+| `tools/post-execute` 递卡插件 | ⏳ **待主人拍板**（需重启 dsh-web） |
+| 产卡闸：frontmatter 合法性 + description 非空 | ⏳ 待落进 `consolidate`/`skills` |
+
+### 7-14-8. 方法论（第三次同一个病）
+
+- 第一次：`retrieval_anchor` 调了好几轮，她一个字看不到
+- 第二次：按训练侧说法改写 description，两折交叉验证证明是假的
+- 第三次：`isError` 恒 false，所以「工具失败率」这个指标一直是 0，实际 19.4%
+
+三次都是同一句：**我验的是自己造的面，不是她消费的面**。所以这一节的可执行纪律是：
+
+> 任何「她用得不好」的判断，先回答三个问题：
+> ① 这个东西**真的进她提示词了吗**（grep 她的真会话，不是 grep 我们的代码）
+> ② 这个信号**她真的能看见吗**（`isError` 不等于内容；目录注入不等于她读过）
+> ③ 这个时机**她真的会去看吗**（全量注入 1323 token 证明成本不是问题，是时机）

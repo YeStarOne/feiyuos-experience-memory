@@ -143,6 +143,57 @@ class TestBodyGates(unittest.TestCase):
         self.assertNotIn("142538", clean)
 
 
+class TestCatalogVisibility(unittest.TestCase):
+    """目录可见性闸：进不了她 skill 目录的卡 = 没写。
+
+    11-13 实测事故：`stardew-mine-fight/SKILL.md` 是纯 markdown、没有 frontmatter，
+    dsh 的 parseSkillFile 直接跳过它——卡写得多好都进不了目录，**而且没有任何报错**。
+    全库 22 张卡里 1 张是这样静默不可见的，靠人工体检才发现。
+    这里把三个静默丢弃点都做成闸：
+      ① frontmatter 必须是合法 JSON  ② description 非空  ③ description ≤ 500
+    """
+
+    def test_card_without_frontmatter_cannot_be_rendered(self):
+        # 纯 markdown 卡：连 render 都过不去（不是靠人肉发现）
+        from expmem.skills import parse_skill
+        with self.assertRaises(StateError):
+            parse_skill("# 挖矿打怪卡\n\n## 前置\n1. 先借身\n")
+
+    def test_empty_description_rejected(self):
+        from expmem.skills import lint_catalog_visibility
+        for bad in ("", "   ", None):
+            with self.assertRaises(StateError, msg=repr(bad)):
+                lint_catalog_visibility({"name": "x", "description": bad})
+
+    def test_description_over_catalog_cap_rejected(self):
+        # 超 500 会被 dsh 静默截断（catalogDescriptionMaxLength 默认 500），
+        # 不是报错而是后半句消失——所以必须在产卡时拒
+        from expmem.skills import lint_catalog_visibility, CATALOG_DESC_MAX
+        ok = {"name": "x", "description": "字" * CATALOG_DESC_MAX}
+        lint_catalog_visibility(ok)                       # 正好 500 放行
+        over = {"name": "x", "description": "字" * (CATALOG_DESC_MAX + 1)}
+        with self.assertRaises(StateError):
+            lint_catalog_visibility(over)
+
+    def test_render_skill_enforces_visibility(self):
+        # 闸必须挂在产出路径上，不能只当独立函数存在（否则没人调它）
+        from expmem.skills import render_skill
+        with self.assertRaises(StateError):
+            render_skill(dict(FRONT, description=""), BODY)
+
+    def test_real_repo_cards_all_visible(self):
+        # 回归：仓里每张真卡都必须能过这道闸（防止以后加卡忘了 description）
+        import glob
+        from expmem.skills import load_skill, lint_catalog_visibility
+        root = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                            "cards")
+        paths = glob.glob(os.path.join(root, "*", "SKILL.md"))
+        self.assertTrue(paths, "cards/ 下没找到任何卡，闸等于空转")
+        for p in paths:
+            front, _ = load_skill(p)          # 解析不抛 = frontmatter 合法
+            lint_catalog_visibility(front)    # 不抛 = 能进目录
+
+
 class TestRewriteCard(unittest.TestCase):
     """AWM 整份重写 + SkillWeaver 改一次验证清零。"""
 

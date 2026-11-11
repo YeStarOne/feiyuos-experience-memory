@@ -88,6 +88,34 @@ def sanitize_for_body(s: str) -> str:
     return s
 
 
+# dsh 目录行 description 上限（dsh-tool-skill catalogDescriptionMaxLength 默认 500）。
+# 超了会被**静默截断**——不是报错，是后半句直接消失。
+CATALOG_DESC_MAX = 500
+
+
+def lint_catalog_visibility(front: dict) -> None:
+    """目录可见性闸：这张卡到底进不进得了她的 skill 目录。
+
+    为什么需要（11-13 实测）：`stardew-mine-fight/SKILL.md` 是纯 markdown、没有
+    frontmatter，`parseSkillFile` 直接跳过它——**卡写得多好都进不了目录，而且
+    没有任何报错**。全库 22 张卡里 1 张是这样静默不可见的。
+
+    三道闸对应 dsh 侧三个静默丢弃点：
+      ① frontmatter 必须是合法 JSON（parseSkillFile 抛异常=整张卡消失）
+      ② description 非空（目录行是 `- \\`name\\`: description`，空的等于没说明）
+      ③ description ≤ 500（超了静默截断，后半句丢掉）
+    """
+    if not isinstance(front, dict):
+        raise StateError("frontmatter 不是对象，parseSkillFile 会整张跳过")
+    desc = front.get("description")
+    if not isinstance(desc, str) or not desc.strip():
+        raise StateError("description 为空：目录行会变成 `- `name`: `，她看不到任何说明")
+    if len(desc) > CATALOG_DESC_MAX:
+        raise StateError(
+            "description %d 字超过目录上限 %d，超出部分会被 dsh 静默截断：%r"
+            % (len(desc), CATALOG_DESC_MAX, desc[:60]))
+
+
 def is_tested(front: dict) -> bool:
     return int(front.get("test_count", 0) or 0) > 0
 
@@ -137,6 +165,8 @@ def render_skill(front: dict, body: str) -> str:
             raise StateError("frontmatter 缺必填字段: %s" % k)
     if front["state"] not in STATES:
         raise StateError("非法状态: %s" % front["state"])
+    # 产卡即过可见性闸：进不了目录的卡等于没写（11-13 实测过一张静默不可见的）
+    lint_catalog_visibility(front)
     return "---\n%s\n---\n%s" % (json.dumps(front, ensure_ascii=False,
                                             sort_keys=True, indent=1), body.rstrip() + "\n")
 
