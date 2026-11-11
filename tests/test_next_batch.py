@@ -300,6 +300,47 @@ class TestPendingPolicy(unittest.TestCase):
         self.assertEqual([x["name"] for x in r2["refs"]], ["card-3"])
         self.assertEqual(r2["generic_only"], 0)
 
+    def test_mixed_script_segment_yields_no_cross_script_bigrams(self):
+        """11-12 夜真库实锤：中英混排段统一切 bigram 会造跨界碎片。
+
+        `restart` → es/ta/ar/st、`yestar` → ye/es、`读state校验` → 读s/e校。
+        这些碎片**跨卡通用**（凡提过 restart/state 的卡都产同一批），于是
+        `stardew-persist-fish-guard` 靠 es+ta 命中了 103/158 个**动作回合**
+        与 71/844 个聊天回合——不是它相关，是碎片撞上了。
+        """
+        from expmem.retrieve import _tokens
+        junk = {"es", "ta", "ar", "st", "ye", "re", "rt", "at", "te"}
+        for s in ("8s让位restart-fish", "来自yestar/stardew-host",
+                  "读state校验", "V1.6.15-fish 路径"):
+            got = _tokens(s)
+            self.assertFalse(got & junk, "%s → %s" % (s, sorted(got & junk)))
+            # 跨界的单字/双字碎片也不许有（碎片里含中文的那个方向）
+            self.assertFalse({t for t in got if any("\u4e00" <= c <= "\u9fff" for c in t)
+                              and any(not ("\u4e00" <= c <= "\u9fff") for c in t)},
+                             "%s → %s" % (s, sorted(got)))
+        # 切开后整段 ASCII 仍是完整词：精确对得上，只是不再吐碎片
+        self.assertIn("restart", _tokens("8s让位restart-fish"))
+        self.assertIn("fish", _tokens("8s让位restart-fish"))
+        self.assertIn("state", _tokens("读state校验"))
+        self.assertIn("校验", _tokens("读state校验"))
+        # 中文段的单字+bigram 召回不受影响
+        self.assertTrue({"让位", "位", "让"} <= _tokens("8s让位restart-fish"))
+
+    def test_mixed_script_junk_no_longer_drives_false_recall(self):
+        # 行为层：卡里写 restart，查询里写「重启」+另一个无关词时不该靠 es/ta 撞上
+        cat = self._cat([
+            {"name": "persist-guard", "description": "8s让位restart-fish 判活",
+             "state": "candidate", "tool_key": "stardew.persist",
+             "retrieval_anchor": "8s让位restart-fish 判活 进程 路径",
+             "task_query": "按可执行路径判活"},
+        ])
+        # 「restart」与「state」这两个词的碎片 es/ta 曾是通用撞车点
+        self.assertEqual(retrieve.retrieve_skills("读state校验", cat)["refs"], [])
+        # 真提到 restart 仍能召回
+        self.assertEqual([x["name"] for x in
+                          retrieve.retrieve_skills("restart 判活", cat)["refs"]],
+                         ["persist-guard"])
+
     def test_small_catalog_untouched(self):
         # 小语料（<7 张）cap>N 等于不剥——夹具/小目录向后兼容。
         # 查询给「这张卡」而不是「这张」：min_multi=2 下单个词只算一条证据，

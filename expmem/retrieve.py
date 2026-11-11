@@ -77,15 +77,25 @@ def _tokens(s: str):
         for sub in re.split(r"[-_./]+", t):
             if not sub:
                 continue
-            if _CJK_RE.search(sub):
-                out.update(ch for ch in sub if ch not in STOPCHARS)  # 单字管召回（功能字除外）
-                if len(sub) >= 2:
-                    # bigram 管精度；但**纯功能字 bigram**（不是/是不/了么）不算证据
-                    # ——cmb 实测：卡里写「不是」时 query「是不是」就会命中它
-                    out.update(sub[i:i + 2] for i in range(len(sub) - 1)
-                               if not all(ch in STOPCHARS for ch in sub[i:i + 2]))
-            else:
-                out.add(sub)
+            # 中英混排必须先按字符族切开再切 bigram（11-12 夜修）。旧写法对含
+            # 中文的整段统一切 bigram，跨界处必然造垃圾：`restart` → es/ta/ar/st、
+            # `yestar` → ye/es、`读state校验` → 读s/e校。这些碎片**跨卡通用**
+            # （凡卡里提过 restart/state 就都产同一批），真库实测
+            # `stardew-persist-fish-guard` 靠 es+ta 两个碎片命中 103/158 个
+            # **动作回合**和 71/844 个聊天回合——不是它相关，是碎片撞上了。
+            # 切开后：CJK 段照旧单字+bigram（召回不变），ASCII 段整段当词
+            # （`restart` 仍能与查询里的 `restart` 精确对上，只是不再吐碎片）。
+            for run in re.finditer(r"[\u4e00-\u9fff]+|[^\u4e00-\u9fff]+", sub):
+                seg = run.group()
+                if _CJK_RE.search(seg):
+                    out.update(ch for ch in seg if ch not in STOPCHARS)  # 单字管召回（功能字除外）
+                    if len(seg) >= 2:
+                        # bigram 管精度；但**纯功能字 bigram**（不是/是不/了么）不算证据
+                        # ——cmb 实测：卡里写「不是」时 query「是不是」就会命中它
+                        out.update(seg[i:i + 2] for i in range(len(seg) - 1)
+                                   if not all(ch in STOPCHARS for ch in seg[i:i + 2]))
+                else:
+                    out.add(seg)
     return out
 
 
