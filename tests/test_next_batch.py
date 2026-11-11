@@ -254,6 +254,33 @@ class TestPendingPolicy(unittest.TestCase):
         r = retrieve.retrieve_skills("buy price charge", cat)
         self.assertEqual(r["conflict_pairs"], [])    # 降废的旧版不算悬案
 
+    def test_df_cap_does_not_scale_with_catalog_size(self):
+        # 11-12 夜零假设实锤的 bug：旧 df_cap=max(4,ceil(.6N)) 让闸随图书馆变大
+        # 而变松（N=8→5，N=20→12，N=50→30），到 20 张时任何词都够不上「通用」。
+        # 零假设对照：往 8 卡里塞 12 张**纯随机噪声卡**，旧规则下判别力从
+        # 36.2pp 假涨到 51.5pp、槽位 161/236→306/297（涨的全是噪声）；
+        # 固定 5 后塞同样的噪声卡，命中一位数都不变。
+        from expmem.retrieve import _df_cap
+        self.assertEqual(_df_cap(8), 5)          # 现网口径不变
+        self.assertEqual(_df_cap(20), 5)         # 卡变多不许变松
+        self.assertEqual(_df_cap(50), 5)
+        self.assertEqual(_df_cap(3), 4)          # 小语料下限仍是不剥（向后兼容）
+        # 行为层：造一个 df=6 的模板词（在 6/20 张卡里出现）。旧规则 N=20 →
+        # cap=12，6<12 ⇒ 当证据放行；新规则 cap=5，6>=5 ⇒ 剥掉。这才是缩放
+        # bug 的真实后果，只比「加随机噪声」是抓不到的（噪声卡 df=1，两种
+        # 规则下都照旧当证据，而它与查询不相交所以零命中）。
+        shared = [{"name": "sh-%d" % i, "description": "公共词模板", "state": "candidate",
+                   "tool_key": "sh.%d" % i,
+                   "retrieval_anchor": "对账 公共词 uq%d" % i,
+                   "task_query": "公共词 对账"} for i in range(6)]
+        others = [{"name": "ot-%d" % i, "description": "别的", "state": "candidate",
+                   "tool_key": "ot.%d" % i, "retrieval_anchor": "ot%d zz%d" % (i, i),
+                   "task_query": ""} for i in range(14)]
+        r = retrieve.retrieve_skills("公共词", self._cat(shared + others))
+        # 「公共词」出现在 6/20 张卡里 = 模板词，剥完这 6 张只剩单字/无证据
+        self.assertEqual([x["name"] for x in r["refs"]], [])
+        self.assertEqual(r["generic_only"], 6)   # 剥掉而不是静默消失
+
     def test_generic_token_stripped_on_real_size_catalog(self):
         # 11-12 夜真库反事实实锤：8 张卡的默认 task_query 全含「这张卡」，
         # 聊天回合「把这张图发给小主人」曾命中全部卡。真库量级(≥7)下
