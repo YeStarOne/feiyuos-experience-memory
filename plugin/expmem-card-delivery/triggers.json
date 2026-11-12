@@ -1,0 +1,23 @@
+[
+ {
+  "id": "store-noop",
+  "card": "stardew-store",
+  "cmd_re": "sd (raw )?/store",
+  "out_re": "\"stored\"\\s*:\\s*\\[\\s*\\]",
+  "hint": "这次 /store 返回 stored:[]——一件都没存进去（不是存了 0 个，是动作没生效）。先确认人站在箱子 1 格内、箱子没满再重试；对账口径看卡 stardew-store。"
+ },
+ {
+  "id": "harvest-zero",
+  "card": "stardew-sd-farm",
+  "cmd_re": "sd (raw )?/(interact|harvest)|farm reap",
+  "out_re": "收菜完成\\s*0\\s*件",
+  "hint": "收菜 0 件：若 farm scan 显示 ready>0，=锚点被占或人没站进田里（空转）；ready=0 才是真收完了。详见卡 stardew-sd-farm。"
+ },
+ {
+  "id": "raw-json-broken",
+  "card": "stardew-raw-truncated-json",
+  "cmd_re": "sd raw /",
+  "out_re": "JSONDecodeError|Invalid control character|Expecting value",
+  "hint": "sd raw 的输出解析炸了：先怀疑工具，不是你的 python 写错。判据=直连 curl 47843 比字节数，差一个数量级就是工具层截断（已修 11-13）。诊断三步见卡 stardew-raw-truncated-json。"
+ }
+]
