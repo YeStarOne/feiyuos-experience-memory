@@ -222,7 +222,7 @@ class TestInductSpecs(unittest.TestCase):
 class TestDescriptionIsTheOnlyLiveSurface(unittest.TestCase):
     """description 是 dsh skill 目录**唯一**注入进她提示词的字段。
 
-    证据（11-13 凌晨查源码 + 真会话）：
+    证据（11-12 凌晨查源码 + 真会话）：
       · dsh-skill-filesystem parseSkillFile 只保留 name/description/whenToUse/
         invocation/metadata —— retrieval_anchor 在解析阶段就被丢弃
       · dsh-tool-skill catalogSourceEntries 只渲染 {name, description[:500]}

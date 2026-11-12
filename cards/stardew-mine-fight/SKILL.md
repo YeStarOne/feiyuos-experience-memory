@@ -10,8 +10,8 @@
  "evidence": [
   {
    "verdict": "unknown",
-   "note": "这张卡是从人工排障笔记转来的（2026-11-13 补 frontmatter 时才进目录），不是从 episode 归纳出来的，所以 evidence 为空。等真跑一次下矿再回填。",
-   "date": "2026-11-13"
+   "note": "这张卡是从人工排障笔记转来的（2026-11-12 补 frontmatter 时才进目录），不是从 episode 归纳出来的，所以 evidence 为空。等真跑一次下矿再回填。",
+   "date": "2026-11-12"
   }
  ]
 }

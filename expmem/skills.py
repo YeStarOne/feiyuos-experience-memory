@@ -96,7 +96,7 @@ CATALOG_DESC_MAX = 500
 def lint_catalog_visibility(front: dict) -> None:
     """目录可见性闸：这张卡到底进不进得了她的 skill 目录。
 
-    为什么需要（11-13 实测）：`stardew-mine-fight/SKILL.md` 是纯 markdown、没有
+    为什么需要（11-12 实测）：`stardew-mine-fight/SKILL.md` 是纯 markdown、没有
     frontmatter，`parseSkillFile` 直接跳过它——**卡写得多好都进不了目录，而且
     没有任何报错**。全库 22 张卡里 1 张是这样静默不可见的。
 
@@ -165,7 +165,7 @@ def render_skill(front: dict, body: str) -> str:
             raise StateError("frontmatter 缺必填字段: %s" % k)
     if front["state"] not in STATES:
         raise StateError("非法状态: %s" % front["state"])
-    # 产卡即过可见性闸：进不了目录的卡等于没写（11-13 实测过一张静默不可见的）
+    # 产卡即过可见性闸：进不了目录的卡等于没写（11-12 实测过一张静默不可见的）
     lint_catalog_visibility(front)
     return "---\n%s\n---\n%s" % (json.dumps(front, ensure_ascii=False,
                                             sort_keys=True, indent=1), body.rstrip() + "\n")

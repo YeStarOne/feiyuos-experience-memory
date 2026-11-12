@@ -146,7 +146,7 @@ class TestBodyGates(unittest.TestCase):
 class TestCatalogVisibility(unittest.TestCase):
     """目录可见性闸：进不了她 skill 目录的卡 = 没写。
 
-    11-13 实测事故：`stardew-mine-fight/SKILL.md` 是纯 markdown、没有 frontmatter，
+    11-12 实测事故：`stardew-mine-fight/SKILL.md` 是纯 markdown、没有 frontmatter，
     dsh 的 parseSkillFile 直接跳过它——卡写得多好都进不了目录，**而且没有任何报错**。
     全库 22 张卡里 1 张是这样静默不可见的，靠人工体检才发现。
     这里把三个静默丢弃点都做成闸：

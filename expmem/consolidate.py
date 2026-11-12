@@ -342,7 +342,7 @@ _TASK_QUERY = {
     "stardew.store": "存仓库后当场确认 stored 非空",
 }
 
-# 「什么时候用」短语（11-13 凌晨）：**description 是唯一活面**，必须自己说清场景。
+# 「什么时候用」短语（11-12 凌晨）：**description 是唯一活面**，必须自己说清场景。
 #
 # 为什么加这个：dsh 的 skill 目录只注入 `- \`name\`: description`（源码
 # dsh-tool-skill/lib/index.js:770-776 + dsh-skill-filesystem/lib/index.js:696-706

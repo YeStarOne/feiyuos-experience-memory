@@ -18,6 +18,6 @@
   "card": "stardew-raw-truncated-json",
   "cmd_re": "sd raw /",
   "out_re": "JSONDecodeError|Invalid control character|Expecting value",
-  "hint": "sd raw 的输出解析炸了：先怀疑工具，不是你的 python 写错。判据=直连 curl 47843 比字节数，差一个数量级就是工具层截断（已修 11-13）。诊断三步见卡 stardew-raw-truncated-json。"
+  "hint": "sd raw 的输出解析炸了：先怀疑工具，不是你的 python 写错。判据=直连 curl 47843 比字节数，差一个数量级就是工具层截断（已修 11-12）。诊断三步见卡 stardew-raw-truncated-json。"
  }
 ]

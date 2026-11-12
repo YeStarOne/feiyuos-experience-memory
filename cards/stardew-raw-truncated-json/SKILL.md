@@ -1,7 +1,7 @@
 ---
 {
  "name": "stardew-raw-truncated-json",
- "description": "sd raw 拿到的 JSON 解析炸 / 报 Invalid control character / Expecting value 时看这张：不是你的 python 写错了，是 sd raw 把长输出截成了非法 JSON（已修，2026-11-13）。要完整 /state 用 sd state。",
+ "description": "sd raw 拿到的 JSON 解析炸 / 报 Invalid control character / Expecting value 时看这张：不是你的 python 写错了，是 sd raw 把长输出截成了非法 JSON（已修，2026-11-12）。要完整 /state 用 sd state。",
  "tool_key": "stardew.raw",
  "state": "verified",
  "version": 2,
@@ -12,12 +12,12 @@
    "cmd": "~/qq-workspace/bin/sd raw /state 2>/dev/null | python3 -c \"import sys,json;d=json.load(sys.stdin);print(d[chr(39)+\"player\"+chr(39)])\"",
    "out": "json.decoder.JSONDecodeError: Invalid control character at: line 1 column 1501 (char 1500)",
    "note": "sd raw /state 只吐 1527 字节就断在 \"time\": { 处；直连 47843 同一时刻返回 13036 字节合法 JSON。",
-   "date": "2026-11-13"},
+   "date": "2026-11-12"},
   {"verdict": "success",
    "cmd": "~/qq-workspace/bin/sd raw /state 2>/dev/null | python3 -c \"import sys,json;d=json.load(sys.stdin);print(d[chr(39)+\"player\"+chr(39)][chr(39)+\"money\"+chr(39)])\"",
    "out": "1412525",
    "note": "修后：2546 字合法 JSON，player/time/location 全保，只折 inventory(9044字)+recent_events。",
-   "date": "2026-11-13"}
+   "date": "2026-11-12"}
  ]
 }
 ---
@@ -45,9 +45,9 @@ python3 -c "import json;d=json.load(open(\"/tmp/a.json\"));print(\"直连 OK\",l
 ## 判据（别靠"感觉像"）
 - 端点真坏的特征：HTTP 非 200、或 `{"ok": false, ...}`、或直连也解析失败
 - 工具截断的特征：**直连能解析、sd 不能**，且 sd 输出长度刚好是个整数边界
-- 11-13 这次就是后者：`bin/sd` 的 `cmd_raw` 里写了 `[:1500]`
+- 11-12 这次就是后者：`bin/sd` 的 `cmd_raw` 里写了 `[:1500]`
 
-## 已经修好了（2026-11-13）
+## 已经修好了（2026-11-12）
 `bin/sd` 现在超长时**折叠大字段**而不是切字符：
 - 预算 3000 字，`player` / `time` / `location` / `activeMenu` 属 CORE，永不折叠
 - 列表类先折，给 `{_count, _sample}`，你仍能看到"包里前一件是什么"

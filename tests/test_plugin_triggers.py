@@ -47,7 +47,7 @@ class TestTriggerTable(unittest.TestCase):
         # 用允许清单标注「服务器侧卡」并在 JS 测试注释里点回）
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         repo_cards = {d for d in os.listdir(os.path.join(root, "cards"))}
-        # 服务器侧卡清单（2026-11-13 核实过都真实存在于 ~/.dsh/skills/）
+        # 服务器侧卡清单（2026-11-12 核实过都真实存在于 ~/.dsh/skills/）
         SERVER_ONLY = {"stardew-sd-farm", "stardew-raw-truncated-json"}
         for t in self._raw():
             self.assertTrue(t["card"] in repo_cards or t["card"] in SERVER_ONLY,

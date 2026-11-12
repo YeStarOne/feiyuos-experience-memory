@@ -285,7 +285,7 @@ class TestPendingPolicy(unittest.TestCase):
         # 11-12 夜真库反事实实锤：8 张卡的默认 task_query 全含「这张卡」，
         # 聊天回合「把这张图发给小主人」曾命中全部卡。真库量级(≥7)下
         # 通用 token 必须剥掉；剥完空的不进 refs 也不进 dropped_weak。
-        # 11-13 深夜：证据面收成 anchor+标识符后，模板词必须放进 **anchor**
+        # 11-12 深夜：证据面收成 anchor+标识符后，模板词必须放进 **anchor**
         # 才测得到 df 剥离（留在 task_query 里现在连证据都不是，测的就成了
         # 字段边界而不是 df_cap）。
         cat = self._cat([
@@ -348,7 +348,7 @@ class TestPendingPolicy(unittest.TestCase):
         # 小语料（<7 张）cap>N 等于不剥——夹具/小目录向后兼容。
         # 查询给「这张卡」而不是「这张」：min_multi=2 下单个词只算一条证据，
         # 这里要测的是「没被当模板词剥掉」，不是闸的宽度。
-        # 11-13 深夜：「这张卡」从 task_query 挪进 anchor——证据面现在只认
+        # 11-12 深夜：「这张卡」从 task_query 挪进 anchor——证据面现在只认
         # anchor+标识符，模板词留在叙述句里就测不到 df 剥离了。
         cat = self._cat([
             {"name": "a", "description": "甲", "state": "candidate",
@@ -364,7 +364,7 @@ class TestPendingPolicy(unittest.TestCase):
     def test_slash_split_hygiene_and_recall(self):
         # 11-12 夜真库实锤：'/' 不切 → 卡里 warp/move/face 斜杠连体与查询里
         # 图片路径 [图片:/home/...] 产出 'e/''nt''t/' 碎片乱匹配（sd-act 噪声）
-        # 11-13 深夜：斜杠连体搬进 anchor（证据面只认 anchor+标识符）。
+        # 11-12 深夜：斜杠连体搬进 anchor（证据面只认 anchor+标识符）。
         cat = self._cat(
             [{"name": "sd-act", "description": "星露谷 act", "state": "candidate",
               "tool_key": "stardew.act",
@@ -592,7 +592,7 @@ class TestFunctionWordStripping(unittest.TestCase):
 class TestEvidenceFieldBoundary(unittest.TestCase):
     """证据面 = anchor + 标识符；叙述句（task_query/description）只进排序。
 
-    11-13 深夜真库实测（34 动作 / 757 纯聊天 / 22 标注）：
+    11-12 深夜真库实测（34 动作 / 757 纯聊天 / 22 标注）：
         证据面=全字段  动作 3/34=8.8%  噪声 57/757=7.5%  ⇒ 判别力 +1.3pp
         证据面=anchor  动作 4/34=11.8% 噪声 42/757=5.5%  ⇒ 判别力 +6.2pp
     反向对照（把 _evidence_hay 改回 _hay）精确回到 3/34 · 57/757 ⇒ 真因确认。

@@ -336,7 +336,7 @@ cmb 用自己的分段器复核 S0：**S0 通过**，但抓到一个真缺陷+�
 5. **证据回点校验**（neo4j quote 区间）：consolidator 写卡的 evidence {cmd,out} 必须能在 actions.jsonl 点回原文（生成时校验、错位拒收）；SkillRef 追问只接受**本轮已交付**的 skill_id（防编造 ID）；反幻觉包装语至少带「摘要待核」「未提及≠不存在」。
 6. **预算 frozen 常量**：SkillRef 预算（max_inject/行宽/目录预算）集中成常量，不散落魔法数；「丢过东西」一行（hippocampus）值得抄——她被压掉的上下文注入一句「我还有」。
 
-## 7-12. 检索精度三轮口径更正 + 召回天花板定性（2026-11-12 夜 ~ 11-13）
+## 7-12. 检索精度三轮口径更正 + 召回天花板定性（2026-11-12）
 
 ### 7-12-1. 三次口径更正，方向完全一致
 
@@ -346,7 +346,7 @@ cmb 用自己的分段器复核 S0：**S0 通过**，但抓到一个真缺陷+�
 |---|---|---|---|
 | ① 11-12 | 全部 1003 回合 | 剔掉 174 条 RN 团队信 | +20.9pp → **+3.4pp** |
 | ② 11-12 | 每回合算一个样本 | 连说同一句 17 轮折叠成 1 条（1008→958） | +7.7pp |
-| ③ 11-13 | actions 非空 = 指令（46 条） | 逐条手工标注（9 条有卡指令） | +6.2pp → **+38.9pp** |
+| ③ 11-12 | actions 非空 = 指令（46 条） | 逐条手工标注（9 条有卡指令） | +6.2pp → **+38.9pp** |
 
 ③ 是最严重的一次：791 条 run 里 actions 非空 46 条，**其中 37 条根本不是指令**——20+ 条只是叫了她的名字（`鱼鱼`），其余是 `哈哈真可爱`、`[图片:...]`、`亲亲鱼鱼`。她本来就在干活，主人随口一句闲话那一轮照样有 actions。
 
@@ -419,7 +419,7 @@ stardew.buy  → 'buy farm op raw sd water'  中文词 0 个
 | `why_fail.py` | 单条失败查询逐卡看交集/df 剥离/证据条数 |
 | `anchor_v5.py` | 过拟合演示：补锚 9/9 但留出集不动（反面教材，别照抄） |
 
-## 7-13. ⭐⭐⭐ `retrieval_anchor` 是死字段 —— 真链路核查（2026-11-13 凌晨）
+## 7-13. ⭐⭐⭐ `retrieval_anchor` 是死字段 —— 真链路核查（2026-11-12 凌晨）
 
 **这一节推翻了 §7-12 的一个前提。** 前面几轮都在调 `retrieval_anchor`（补锚、删句式词、证据面收窄成 anchor+标识符）。现在查明：**那个字段从来没进过她的提示词。**
 
@@ -524,7 +524,7 @@ valid_from       : 0 行
 
 ## 7-14. 真瓶颈不在 description 写得好不好，在「没有任何机制在需要时把卡递到她眼前」
 
-日期：2026-11-13 凌晨。承接 §7-13（anchor 是死字段、description 是唯一活面）。
+日期：2026-11-12 凌晨。承接 §7-13（anchor 是死字段、description 是唯一活面）。
 
 ### 7-14-1. 先量她的行为面：她根本不「查目录」
 
@@ -572,7 +572,7 @@ valid_from       : 0 行
 
 > 她敲 `sd /store` 且 `stored: []`（或任何已知失败形态）→ 下一轮注入 `stardew-store` 卡的对账口径。
 
-这是**插件级改动**（要新建一个 cordis 插件并加进 `cordis.patch.yml`），需要重启 dsh-web，按纪律必须挑她空闲 + 主人点头。**未做，等拍板。**
+这是**插件级改动**（要新建一个 cordis 插件并加进 `cordis.patch.yml`），当时按纪律要挑她空闲 + 主人点头。**2026-11-12 已落地并热载验证，见 §7-14-9。**
 
 ### 7-14-5. 顺带挖到并修掉的真 bug：`sd raw` 把长 JSON 切成非法 JSON
 
@@ -620,9 +620,9 @@ print(json.dumps(d, ensure_ascii=False)[:1500])
 | 新卡 `stardew-raw-truncated-json`（症状→判据→修法，不是统计数字） | ✅ 已写入，150 字 |
 | `stardew-mine-fight` 补 frontmatter（原本不可见） | ✅ 已补 |
 | 全库 22/22 可进目录，目录 2646 字 ≈ 1323 token | ✅ 已核 |
-| `tools/post-execute` 递卡插件 | **原型已写好+测好+暂存**（`plugin/expmem-card-delivery/`，commit aac9030；服务器 `~/.dsh/plugins/` 已放文件，patch yml 未写、未重启）——**注册仍待主人拍板** |
+| `tools/post-execute` 递卡插件 | ✅ 已上线（2026-11-12 09:15，主人拍板窗口；home 层 patch + `.loaded-marker` 金丝雀；热加载实测见 §7-14-9） |
 | buy/store 描述改写部署到 `~/.dsh/skills/` | ✅ 已落盘（趁 turn 1021 结束的窗口；evidence 3/7 条保留，场景在前） |
-| 产卡闸：frontmatter 合法性 + description 非空 | ⏳ 待落进 `consolidate`/`skills` |
+| 产卡闸：frontmatter 合法性 + description 非空 | ✅ 已落进 `skills.render_skill`（`lint_catalog_visibility` + 5 条测试） |
 
 ### 7-14-8. 方法论（第三次同一个病）
 
@@ -636,3 +636,24 @@ print(json.dumps(d, ensure_ascii=False)[:1500])
 > ① 这个东西**真的进她提示词了吗**（grep 她的真会话，不是 grep 我们的代码）
 > ② 这个信号**她真的能看见吗**（`isError` 不等于内容；目录注入不等于她读过）
 > ③ 这个时机**她真的会去看吗**（全量注入 1323 token 证明成本不是问题，是时机）
+
+### 7-14-9. 热加载实测：加插件不用重启 dsh（2026-11-12）
+
+`dsh-hmr` 的 `watchConfig` 同时监听 profile patch 和 home patch
+（`dsh-hmr/lib/index.js:850`：`[profile.patchPath, join(profile.home, PROFILE_PATCH_FILENAME)]`），
+变更后走 `recomposeProfile` 热重组。实测（同一 PID 938055，全程未重启 dsh-web）：
+
+| 动作 | 结果 |
+|---|---|
+| 改 `~/.dsh/cordis.patch.yml` 的 `cooldownMs` 1800000→1800001 | 20s 内插件带新值重新挂载（marker 09:16:02） |
+| 改回 1800000 | 20s 内再次重挂（09:17:03） |
+| 删除 patch 后从零重建 | 20s 内重新挂载（09:19:22） |
+
+启动路径也已核对：`boot()` 用 `readProfilePatches`（dsh-app-boot:1131 把
+`join(context.home, "cordis.patch.yml")` 加在 profile patch 之后），
+相对路径由 `anchorInsertedPluginNames` 锚在 patch 文件旁——`./plugins/...`
+解析为 `~/.dsh/plugins/...`，不用进 npx 缓存。
+
+⚠️ 中途踩了一个自己的坑：金丝雀第一版用了 `writeFileSync` 却没 import，
+ReferenceError 被 catch 吞掉 → marker 永不出现，连续两次重启都被误读成
+「插件没加载」。**把「文件不存在」当判据之前，必须让它先出现过一次。**

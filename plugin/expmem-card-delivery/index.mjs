@@ -1,7 +1,7 @@
 /**
- * expmem-card-delivery —— 沉淀卡「动手那一刻」递送插件（原型，未部署）
+ * expmem-card-delivery —— 沉淀卡「动手那一刻」递送插件（已部署：2026-11-12 起常驻她的 web 面）
  *
- * 解决的问题（2026-11-13 实测，docs/00-plan.md §7-14）：她从不查 skill 目录
+ * 解决的问题（2026-11-12 实测，docs/00-plan.md §7-14）：她从不查 skill 目录
  * ——8537 次工具调用里 `skill` 只被调 3 次（其中 2 次还是 RN 信点名了端点），
  * 而覆盖沉淀卡的 sd 端点调用有 172 次。知识躺在目录里不等于被用：必须在
  * 已知失败形态出现的那一刻，把卡递到她眼前。
@@ -22,7 +22,7 @@
  * insert.name 写 ./plugins/expmem-card-delivery/index.mjs），裸包名解析不到
  * node_modules，所以连 schemastery 都不能用——config 手工校验。
  */
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -113,6 +113,12 @@ export function apply(ctx, config) {
 	const triggers = compileTriggers(
 		JSON.parse(readFileSync(join(HERE, "triggers.json"), "utf8")));
 	const lastFire = new Map();
+	// 加载金丝雀：apply 只在插件真正挂载时运行。标记文件 = 热加载是否生效的
+	// 一眼判据（console.warn 的去向面太多，文件最诚实）。一次性写，不是心跳。
+	try {
+		writeFileSync(join(HERE, ".loaded-marker"),
+			`loaded at ${new Date().toISOString()} triggers=${triggers.length} cooldownMs=${cooldownMs}\n`);
+	} catch { /* 只读盘等极端情况：别让金丝雀自己把挂载弄失败 */ }
 
 	ctx.on("tools/post-execute", async (exec, result, next) => {
 		const downstream = await next();
