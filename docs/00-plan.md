@@ -620,7 +620,8 @@ print(json.dumps(d, ensure_ascii=False)[:1500])
 | 新卡 `stardew-raw-truncated-json`（症状→判据→修法，不是统计数字） | ✅ 已写入，150 字 |
 | `stardew-mine-fight` 补 frontmatter（原本不可见） | ✅ 已补 |
 | 全库 22/22 可进目录，目录 2646 字 ≈ 1323 token | ✅ 已核 |
-| `tools/post-execute` 递卡插件 | ⏳ **待主人拍板**（需重启 dsh-web） |
+| `tools/post-execute` 递卡插件 | **原型已写好+测好+暂存**（`plugin/expmem-card-delivery/`，commit aac9030；服务器 `~/.dsh/plugins/` 已放文件，patch yml 未写、未重启）——**注册仍待主人拍板** |
+| buy/store 描述改写部署到 `~/.dsh/skills/` | ✅ 已落盘（趁 turn 1021 结束的窗口；evidence 3/7 条保留，场景在前） |
 | 产卡闸：frontmatter 合法性 + description 非空 | ⏳ 待落进 `consolidate`/`skills` |
 
 ### 7-14-8. 方法论（第三次同一个病）
