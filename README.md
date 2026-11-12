@@ -38,10 +38,15 @@ memory-hub / auto-memory / 手册§8 / shared-memory.md（知识层），两层�
 stardew-buy / stardew-store / stardew-probe-after-action 三张卡拷进她的技能目录，
 技能架热加载，**不用重启她**。她下一个回合的技能清单里就出现了这三张卡。
 
-**2. 03:01 — 她自己翻开了卡。**
-任务是「把鱼存进仓库」。她用原生 skill 工具**主动翻开** stardew-store 卡，照卡教的
-做：连续三次探桥（间隔 30/60 秒重试），桥不通就如实说「存不了」，不硬编、不瞎猜。
-这就是设计里最想要的消费路径——不是被喂知识，是自己去翻书。
+**2. 03:01 — 她用了一次 skill 工具（2026-11-13 口径更正）。**
+任务是「把鱼存进仓库」。她调了 skill 工具翻开 stardew-store 卡，照卡教的做：
+连续三次探桥（间隔 30/60 秒重试），桥不通就如实说「存不了」，不硬编、不瞎猜。
+
+> **11-13 口径更正**：当时我们把这次调用记作「她自己翻书」，事后全语料倒查证明
+> 不是——那轮的用户消息（RN 团队信）里**点名了 `/store` 端点**。另一次
+> stardew-fin-interface 调用同样是 RN 信点名了「鱼鳍 fin」。8537 次工具调用里
+> skill 只被调 3 次，2 次有明确触发语的都来自外部点名，**0 次是看了目录按
+> description 语义选中的**。见下节三层实测。
 
 **3. 04:0x — 105 分钟的存箱攻坚，判据机判了「失败」。**
 她跑了 20 多条命令：先拍库存照、扫箱子、五次尝试存箱，把所有失败方式都撞了一遍
@@ -55,6 +60,37 @@ stardew-buy / stardew-store / stardew-probe-after-action 三张卡拷进她的�
 > 跟物品名、桥、箱子都无关。卡里「name:"" 等于整包塞箱」的警示来自她 Stone x15 的
 > 真实调用，与这件事无关，规则照留。
 
+## 2026-11-13 凌晨：卡到底有没有被她看见（三层实测）
+
+全语料（8537 次 tool/call、72288 行真会话）倒查出的三层，一层比一层根本：
+
+**第一层：`retrieval_anchor` 是死字段。** dsh 的 parseSkillFile 只保留
+name/description/whenToUse/metadata，其余 frontmatter 键在解析阶段丢弃；她的
+72288 行会话里 `retrieval_anchor` 出现 **0 次**。我们过闸用的锚面和她的活面
+（name+description）交集只有 2~31 词。⇒ 调 anchor 零收益，已改产卡规则：
+description 场景在前、统计在后（commit 8037a11）。
+
+**第二层：`isError` 是假信号。** bash 管道把退出码吃掉，工具层失败对她和我们都
+不存在。按内容文本量才看得出：172 次 sd 端点调用里 7 次失败全是 `Traceback`，
+其中 6 次集中 `/state`（19.4%）——根因是 `sd raw` 的 `[:1500]` 把 12387 字的
+JSON 切成非法 JSON，**端点本身 0 失败**。已修（服务器 `bin/sd` 改折叠大字段，
+`player`/`time`/`location` 永不折叠；诊断卡 `stardew-raw-truncated-json` 已入目录）。
+
+**第三层：她从不查目录。** bash 调用 5222 次、覆盖卡片的 sd 端点调用 172 次、
+skill 工具调用 3 次。目录全量注入才 2646 字 ≈ 1323 token——**成本不是问题，
+时机才是**：她把 `sd /store` 敲进 bash 时，卡不在她视野里。没有查询，就没有召回。
+
+⇒ 递卡插件原型 `plugin/expmem-card-delivery/`：照官方 dsh-repeat-tool-reminder
+的注入合约（`tools/post-execute` → `additionalContexts`），只在已知失败形态
+（`stored:[]` / 收菜 0 件 / sd raw 解析炸）出现时把卡递到她眼前，干净调用零打扰。
+JS 侧在服务器 node v22 真跑全绿；**未部署**——注册进 `~/.dsh/cordis.patch.yml`
+需重启 dsh-web，等主人拍板。
+
+顺带发现并落了闸：`stardew-mine-fight` 卡曾是纯 markdown 无 frontmatter，在她
+目录里**根本不存在**（静默不可见，无任何报错）。`skills.lint_catalog_visibility()`
+挂在产卡路径上：frontmatter 合法 JSON / description 非空 / ≤500，三道闸对应
+dsh 侧三个静默丢弃点。
+
 ## 模块架构（人话版）
 
 ```mermaid
@@ -66,7 +102,7 @@ flowchart TD
     D --> F["归纳器<br/>把同类成败总结成规则"]
     F --> G["技能卡<br/>成功轨 加 失败轨 加 证据链"]
     G --> H["技能架<br/>热载 不用重启"]
-    H -->|她翻卡或被推荐| I["她照卡行事 做完当场对账"]
+    H -->|她翻卡 / 失败形态出现时被递卡（插件原型）| I["她照卡行事 做完当场对账"]
     I -->|用得对不对| E
     E -->|加分 减分| G
 ```
@@ -87,8 +123,9 @@ flowchart TD
 - `expmem/` 模块源码
 - `skills/` 种子卡（retrieve 测试夹具——往这里加卡会改测试基线，生产卡别放这）
 - `cards/` 生产卡镜像（她 live 技能目录的 documentary 副本，测试不消费；session 字段已掩码）
-- `tests/` 172 tests
-- `docs/00-plan.md` 方案与验收口径
+- `plugin/expmem-card-delivery/` 递卡插件原型（未部署，见 11-13 节）
+- `tests/` 242 tests
+- `docs/00-plan.md` 方案与验收口径（§7-13/§7-14 = 11-13 三层实测）
 
 ## 定位（防走样，cmb-absorb-research 2026-11-10 判据）
 
